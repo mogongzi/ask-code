@@ -1,0 +1,54 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# Packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Test and coverage outputs
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.mypy_cache/
+.pyre/
+.pytype/
+.cache/
+
+# Logs and runtime transcripts
+logs/
+*.log
+*.jsonl
+*.trace
+
+# Temporary files
+*.tmp
+*.swp
+*.bak
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.secrets
+*.key
+
+# Editor and OS noise
+.vscode/
+.idea/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+
