@@ -44,7 +44,7 @@ class MigrationAnalyzer(BaseTool):
             "required": []
         }
 
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         """
         Analyze Rails migration files.
 

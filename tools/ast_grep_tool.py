@@ -38,7 +38,7 @@ class AstGrepTool(BaseTool):
             "required": ["pattern"],
         }
 
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         if not self.project_root or not Path(self.project_root).exists():
             return {"error": "Project root not found"}
 

@@ -51,7 +51,7 @@ class BaseTool(ABC):
         }
 
     @abstractmethod
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         """
         Execute the tool with given parameters.
 
@@ -131,7 +131,7 @@ class BaseTool(ABC):
         else:
             self._debug_log(f"📤 OUTPUT{time_info}", result)
 
-    async def execute_with_debug(self, input_params: Dict[str, Any]) -> Any:
+    def execute_with_debug(self, input_params: Dict[str, Any]) -> Any:
         """Execute tool with debug logging wrapper."""
         import time
 
@@ -139,7 +139,7 @@ class BaseTool(ABC):
         start_time = time.time()
 
         try:
-            result = await self.execute(input_params)
+            result = self.execute(input_params)
             execution_time = (time.time() - start_time) * 1000
             self._debug_output(result, execution_time)
             return result

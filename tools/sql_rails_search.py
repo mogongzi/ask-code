@@ -59,7 +59,7 @@ class SQLRailsSearchTool(BaseTool):
             "required": ["sql"],
         }
 
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         if not self.validate_input(input_params):
             return {"error": "Invalid input"}
 
