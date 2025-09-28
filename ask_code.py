@@ -10,22 +10,20 @@ import signal
 from typing import List, Optional
 from rich.console import Console
 from rich.text import Text
-# from render.markdown_live import MarkdownStyled
 
 # Import core components shared across the agent stack
 from providers import get_provider
-# from util.simple_pt_input import get_multiline_input
 from util.command_helpers import handle_special_commands
 from util.input_helpers import should_exit_from_input
 from chat.session import ChatSession
 from streaming_client import StreamingClient
-# from tools.executor import ToolExecutor
 
 # Import ReAct agent
 from react_rails_agent import ReactRailsAgent
 from agent_tool_executor import AgentToolExecutor
 
 # Configuration
+MAX_TOKEN_SIZE = 20000
 DEFAULT_URL = "http://127.0.0.1:8000/invoke"
 PROMPT_STYLE = "bold green"
 console = Console()
@@ -117,15 +115,11 @@ def repl(
     Returns:
         Exit code (0 for success)
     """
-    console.rule("Rails Code Analysis • ReAct Agent")
-    console.print(Text("Type '/help' for commands or 'exit' to leave. Press Esc during stream, or Ctrl+C.", style="dim"))
-
-    # Initialize components
-    # tool_executor = ToolExecutor()
+    console.rule("Rails Analysis Agent")
 
     # Add usage tracking similar to the original CLI implementation
     from chat.usage_tracker import UsageTracker
-    usage = UsageTracker(max_tokens_limit=200000)
+    usage = UsageTracker(max_tokens_limit=MAX_TOKEN_SIZE)
 
     # Extract provider name from module name
     provider_name = provider.__name__.split('.')[-1] if hasattr(provider, '__name__') else "bedrock"
@@ -140,7 +134,6 @@ def repl(
         max_tokens=4096,
         timeout=120.0,
         tool_executor=None,
-        rag_manager=None,
         provider_name=provider_name
     )
 
@@ -154,13 +147,6 @@ def repl(
     try:
         react_agent = ReactRailsAgent(project_root=project_root, session=session)
         console.print(f"[green]✓ ReAct Rails Agent initialized[/green]: {project_root}")
-        # Show tool summary at startup
-        try:
-            st = react_agent.get_status()
-            tools = st.get("tools_available", [])
-            console.print(f"[dim]Tools available ({len(tools)}): {', '.join(sorted(tools))}[/dim]")
-        except Exception:
-            pass
     except Exception as e:
         console.print(f"[red]Error: Could not initialize ReAct agent: {e}[/red]")
         return 1
@@ -246,6 +232,16 @@ def repl(
             else:
                 console.print(f"[dim]Session: {len(user_history)} queries[/dim]")
 
+            # Print a short step summary from the agent for quick context
+            try:
+                if getattr(react_agent, 'react_steps', None):
+                    step_summary = react_agent.get_step_summary(limit=8)
+                    if step_summary and step_summary.strip() and step_summary.strip() != "No steps recorded.":
+                        console.print("[dim]Steps:[/dim]")
+                        console.print(step_summary)
+            except Exception:
+                pass
+
         except Exception as e:
             console.print(f"[red]Agent processing error: {e}[/red]")
 
@@ -254,7 +250,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     """CLI entry point with argument parsing and signal handling."""
     parser = argparse.ArgumentParser(
         prog="ask-code",
-        description="Rails Code Analysis with ReAct Agent"
+        description="Rails Code Analysis Agent"
     )
     parser.add_argument(
         "--project",

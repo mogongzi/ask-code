@@ -8,7 +8,7 @@ Event = Tuple[str, Optional[str]]  # ("model"|"text"|"thinking"|"tool_start"|"to
 
 
 def build_payload(
-    messages: List[dict], *, model: Optional[str] = None, max_tokens: int = 4096, temperature: Optional[float] = None, thinking: bool = False, thinking_tokens: int = 1024, tools: Optional[List[dict]] = None, context_content: Optional[str] = None, system_prompt: Optional[str] = None, stop_sequences: Optional[List[str]] = None, **_: dict
+    messages: List[dict], *, model: Optional[str] = None, max_tokens: int = 4096, temperature: Optional[float] = None, thinking: bool = False, thinking_tokens: int = 1024, tools: Optional[List[dict]] = None, system_prompt: Optional[str] = None, stop_sequences: Optional[List[str]] = None, **_: dict
 ) -> dict:
     """Construct Bedrock/Anthropic-style chat payload.
 
@@ -17,8 +17,7 @@ def build_payload(
     - Keep structure aligned with existing behavior for backward compatibility.
     - If context_content is provided, it will be prepended to the first user message.
     """
-    # Process messages to inject context if provided
-    processed_messages = _inject_context_into_messages(messages, context_content) if context_content else messages
+    processed_messages = messages
 
     payload = {
         "anthropic_version": "bedrock-2023-05-31",
