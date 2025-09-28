@@ -39,7 +39,7 @@ class ControllerAnalyzer(BaseTool):
             "required": ["controller_name"]
         }
 
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         """
         Analyze a Rails controller file.
 

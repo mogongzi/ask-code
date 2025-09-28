@@ -80,7 +80,7 @@ class TransactionAnalyzer(BaseTool):
             "required": ["transaction_log"]
         }
 
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         if not self.validate_input(input_params):
             return {"error": "Invalid input"}
 
@@ -101,12 +101,12 @@ class TransactionAnalyzer(BaseTool):
             # Analyze models in the transaction
             model_analysis = {}
             if self.project_root:
-                model_analysis = await self._analyze_models_in_transaction(flow)
+                model_analysis = self._analyze_models_in_transaction(flow)
 
             # Find source code if requested
             source_findings = []
             if find_source and self.project_root:
-                source_findings = await self._find_source_code(flow, max_patterns)
+                source_findings = self._find_source_code(flow, max_patterns)
 
             # Generate transaction summary
             summary = self._generate_transaction_summary(flow, source_findings, model_analysis)
@@ -386,7 +386,7 @@ class TransactionAnalyzer(BaseTool):
         except Exception:
             return 0.0
 
-    async def _find_source_code(self, flow: TransactionFlow, max_patterns: int) -> List[Dict[str, Any]]:
+    def _find_source_code(self, flow: TransactionFlow, max_patterns: int) -> List[Dict[str, Any]]:
         """Use existing SQL search tools to find source code for each pattern."""
         findings = []
 
@@ -400,7 +400,7 @@ class TransactionAnalyzer(BaseTool):
         for query in significant_queries[:max_patterns]:
             try:
                 # Use enhanced search for better results
-                search_result = await enhanced_search.execute({
+                search_result = enhanced_search.execute({
                     "sql": query.sql,
                     "include_usage_sites": True,
                     "max_results": 5
@@ -419,7 +419,7 @@ class TransactionAnalyzer(BaseTool):
 
         return findings
 
-    async def _analyze_models_in_transaction(self, flow: TransactionFlow) -> Dict[str, Any]:
+    def _analyze_models_in_transaction(self, flow: TransactionFlow) -> Dict[str, Any]:
         """Analyze Rails models mentioned in the transaction for callbacks and associations."""
         model_analysis = {}
 
@@ -438,7 +438,7 @@ class TransactionAnalyzer(BaseTool):
 
             try:
                 # Analyze the model
-                result = await model_analyzer.execute({
+                result = model_analyzer.execute({
                     "model_name": model_name,
                     "include_callbacks": True,
                     "include_associations": True

@@ -39,7 +39,7 @@ class RouteAnalyzer(BaseTool):
             "required": []
         }
 
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         """
         Analyze Rails routes configuration.
 

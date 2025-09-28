@@ -55,7 +55,7 @@ class RipgrepTool(BaseTool):
             "required": ["pattern"]
         }
 
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         """
         Execute ripgrep search.
 

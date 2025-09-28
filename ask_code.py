@@ -18,8 +18,9 @@ from util.input_helpers import should_exit_from_input
 from chat.session import ChatSession
 from streaming_client import StreamingClient
 
-# Import ReAct agent
-from react_rails_agent import ReactRailsAgent
+# Import ReAct agent (refactored version)
+from agent.refactored_rails_agent import RefactoredRailsAgent
+from agent.config import AgentConfig
 from agent_tool_executor import AgentToolExecutor
 
 # Configuration
@@ -103,6 +104,7 @@ def repl(
     *,
     provider,
     project_root: str,
+    debug: bool = False,
 ) -> int:
     """
     Interactive Rails code analysis loop with ReAct agent.
@@ -143,18 +145,32 @@ def repl(
     # Assign streaming client to session
     session.streaming_client = streaming_client
 
-    # Initialize ReAct agent
+    # Initialize Refactored ReAct agent with configuration
     try:
-        react_agent = ReactRailsAgent(project_root=project_root, session=session)
-        console.print(f"[green]✓ ReAct Rails Agent initialized[/green]: {project_root}")
+        # Create agent configuration
+        agent_config = AgentConfig(
+            project_root=project_root,
+            max_react_steps=15,  # Increased for better analysis
+            debug_enabled=debug,
+            log_level="DEBUG" if debug else "INFO",
+            tool_repetition_limit=4,
+            finalization_threshold=3
+        )
+
+        react_agent = RefactoredRailsAgent(config=agent_config, session=session)
+        console.print(f"[green]✓ Refactored Rails Agent initialized[/green]: {project_root}")
+        console.print(f"[dim]Configuration: {agent_config.max_react_steps} max steps, debug={debug}[/dim]")
     except Exception as e:
         console.print(f"[red]Error: Could not initialize ReAct agent: {e}[/red]")
         return 1
 
     # Wire provider-managed tool calls to the agent's tools
     try:
-        agent_executor = AgentToolExecutor(react_agent.tools)
+        # Get tools from the refactored agent's tool registry
+        available_tools = react_agent.tool_registry.get_available_tools()
+        agent_executor = AgentToolExecutor(available_tools)
         session.streaming_client = StreamingClient(tool_executor=agent_executor)
+        console.print(f"[dim]Tool executor configured with {len(available_tools)} tools[/dim]")
     except Exception as e:
         console.print(f"[yellow]Warning: could not attach agent tool executor: {e}[/yellow]")
 
@@ -196,9 +212,11 @@ def repl(
                     session.conversation.clear_history()
                     console.print("[green]✓ Conversation history cleared[/green]")
 
-                # Clear ReAct agent memory if it has internal state
-                if hasattr(react_agent, 'react_steps'):
-                    react_agent.react_steps.clear()
+                # Clear ReAct agent memory (refactored version)
+                if hasattr(react_agent, 'state_machine'):
+                    react_agent.state_machine.reset()
+                if hasattr(react_agent, 'conversation_history'):
+                    react_agent.conversation_history.clear()
 
                 # Reset usage tracker
                 usage.reset()
@@ -232,15 +250,22 @@ def repl(
             else:
                 console.print(f"[dim]Session: {len(user_history)} queries[/dim]")
 
-            # Print a short step summary from the agent for quick context
+            # Print a short step summary from the refactored agent
             try:
-                if getattr(react_agent, 'react_steps', None):
-                    step_summary = react_agent.get_step_summary(limit=8)
-                    if step_summary and step_summary.strip() and step_summary.strip() != "No steps recorded.":
-                        console.print("[dim]Steps:[/dim]")
-                        console.print(step_summary)
-            except Exception:
-                pass
+                step_summary = react_agent.get_step_summary(limit=8)
+                if step_summary and step_summary.strip() and step_summary.strip() != "No steps recorded.":
+                    console.print("[dim]Analysis Steps:[/dim]")
+                    console.print(f"[dim]{step_summary}[/dim]")
+
+                # Show agent status for debugging
+                if debug:
+                    status = react_agent.get_status()
+                    tools_used = len(status['state_machine']['tools_used'])
+                    if tools_used > 0:
+                        console.print(f"[dim]Tools used: {tools_used}, Current step: {status['state_machine']['current_step']}[/dim]")
+            except Exception as e:
+                if debug:
+                    console.print(f"[dim]Debug - Step summary error: {e}[/dim]")
 
         except Exception as e:
             console.print(f"[red]Agent processing error: {e}[/red]")
@@ -267,6 +292,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         default="bedrock",
         choices=["bedrock", "azure"],
         help="Provider adapter to use (default: bedrock)"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode with detailed logging"
     )
     args = parser.parse_args(argv)
 
@@ -295,6 +325,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         endpoint,
         provider=provider,
         project_root=args.project,
+        debug=args.debug,
     )
     return code
 

@@ -74,7 +74,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             "required": ["sql"],
         }
 
-    async def execute(self, input_params: Dict[str, Any]) -> Any:
+    def execute(self, input_params: Dict[str, Any]) -> Any:
         self._debug_input(input_params)
 
         if not self.validate_input(input_params):
@@ -123,14 +123,14 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         # Find definition sites using intelligent strategies
         self._debug_log("🔎 Starting definition search with strategies")
-        definition_matches = await self._find_definition_sites_semantic(analysis)
+        definition_matches = self._find_definition_sites_semantic(analysis)
         self._debug_log("📍 Definition matches found", len(definition_matches))
 
         # Find usage sites
         usage_matches = []
         if include_usage and definition_matches:
             self._debug_log("🔍 Finding usage sites for matches")
-            usage_matches = await self._find_usage_sites(definition_matches)
+            usage_matches = self._find_usage_sites(definition_matches)
             self._debug_log("📍 Usage matches found", len(usage_matches))
 
         # Combine and rank matches
@@ -608,7 +608,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return " ".join(parts)
 
-    async def _find_definition_sites_semantic(self, analysis: QueryAnalysis) -> List[SQLMatch]:
+    def _find_definition_sites_semantic(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Intelligently search for Rails code using semantic analysis and adaptive strategies."""
         if not analysis.primary_model or not self.project_root:
             return []
@@ -624,19 +624,19 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         all_matches = []
         for strategy in strategies:
-            matches = await strategy(analysis)
+            matches = strategy(analysis)
             all_matches.extend(matches)
 
         return all_matches
 
-    async def _strategy_direct_patterns(self, analysis: QueryAnalysis) -> List[SQLMatch]:
+    def _strategy_direct_patterns(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Search for direct Rails patterns inferred from the query."""
         matches = []
 
         for pattern in analysis.rails_patterns:
             # Extract searchable terms from pattern
             if ".exists?" in pattern:
-                found = await self._search_pattern(r"\.exists\?\b", "rb")
+                found = self._search_pattern(r"\.exists\?\b", "rb")
                 for result in found:
                     if analysis.primary_model.lower() in result["content"].lower():
                         matches.append(SQLMatch(
@@ -649,7 +649,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                         ))
 
             elif ".count" in pattern:
-                found = await self._search_pattern(r"\.count\b", "rb")
+                found = self._search_pattern(r"\.count\b", "rb")
                 for result in found:
                     if analysis.primary_model.lower() in result["content"].lower():
                         matches.append(SQLMatch(
@@ -663,7 +663,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
             elif ".where" in pattern:
                 model_pattern = rf"{re.escape(analysis.primary_model)}\.where\b"
-                found = await self._search_pattern(model_pattern, "rb")
+                found = self._search_pattern(model_pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -686,7 +686,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                         rf'\.order\(\s*{re.escape(col)}\s*:\s*:desc\)'  # .order(col: :desc)
                     ]
                     for search_pattern in specific_patterns:
-                        found = await self._search_pattern(search_pattern, "rb")
+                        found = self._search_pattern(search_pattern, "rb")
                         for result in found[:3]:  # Limit per pattern
                             if analysis.primary_model.lower() in result["content"].lower():
                                 matches.append(SQLMatch(
@@ -699,7 +699,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                                 ))
                 else:
                     # Generic .order search if we can't extract column
-                    found = await self._search_pattern(r"\.order\b", "rb")
+                    found = self._search_pattern(r"\.order\b", "rb")
                     for result in found[:5]:
                         if analysis.primary_model.lower() in result["content"].lower():
                             matches.append(SQLMatch(
@@ -713,7 +713,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches[:10]  # Limit direct matches
 
-    async def _strategy_intent_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
+    def _strategy_intent_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Search based on query semantic intent."""
         matches = []
 
@@ -721,7 +721,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             # Search for existence patterns
             patterns = [r"\.exists\?\b", r"\.any\?\b", r"\.present\?\b", r"\.empty\?\b"]
             for pattern in patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found[:3]:  # Limit per pattern
                     if any(table.rails_model.lower() in result["content"].lower()
                           for table in analysis.tables):
@@ -737,7 +737,7 @@ class EnhancedSQLRailsSearch(BaseTool):
         elif analysis.intent == QueryIntent.COUNT_AGGREGATE:
             patterns = [r"\.count\b", r"\.size\b", r"\.length\b"]
             for pattern in patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found[:3]:
                     if any(table.rails_model.lower() in result["content"].lower()
                           for table in analysis.tables):
@@ -752,7 +752,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _strategy_association_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
+    def _strategy_association_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Search for association-based patterns."""
         matches = []
 
@@ -769,7 +769,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                 ]
 
                 for pattern in patterns:
-                    found = await self._search_pattern(pattern, "rb")
+                    found = self._search_pattern(pattern, "rb")
                     for result in found[:2]:  # Limit association matches
                         matches.append(SQLMatch(
                             path=result["file"],
@@ -782,7 +782,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _strategy_validation_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
+    def _strategy_validation_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Search for validation patterns that might trigger existence checks."""
         matches = []
 
@@ -795,7 +795,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             ]
 
             for pattern in validation_patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found[:2]:  # Limit validation matches
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -808,7 +808,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _strategy_callback_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
+    def _strategy_callback_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Search for callbacks that might indirectly trigger queries."""
         matches = []
 
@@ -820,7 +820,7 @@ class EnhancedSQLRailsSearch(BaseTool):
         ]
 
         for pattern in callback_patterns:
-            found = await self._search_pattern(pattern, "rb")
+            found = self._search_pattern(pattern, "rb")
             for result in found[:2]:  # Limit callback matches
                 if any(table.rails_model.lower() in result["content"].lower()
                       for table in analysis.tables):
@@ -835,14 +835,14 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _search_rails_pattern(self, pattern_desc: str, sql_info: Dict) -> List[SQLMatch]:
+    def _search_rails_pattern(self, pattern_desc: str, sql_info: Dict) -> List[SQLMatch]:
         """Search for specific Rails patterns."""
         matches = []
 
         # Extract searchable terms from pattern description
         if "exists?" in pattern_desc:
             # Search for .exists? usage
-            found = await self._search_pattern(r"\.exists\?", "rb")
+            found = self._search_pattern(r"\.exists\?", "rb")
             for result in found:
                 if any(model.lower() in result["content"].lower() for model in sql_info.get("models", [])):
                     matches.append(SQLMatch(
@@ -856,7 +856,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         elif "count" in pattern_desc:
             # Search for .count usage
-            found = await self._search_pattern(r"\.count\b", "rb")
+            found = self._search_pattern(r"\.count\b", "rb")
             for result in found:
                 if any(model.lower() in result["content"].lower() for model in sql_info.get("models", [])):
                     matches.append(SQLMatch(
@@ -872,7 +872,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             # Search for .where usage with the model
             for model in sql_info.get("models", []):
                 pattern = rf"{re.escape(model)}\.where"
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -885,7 +885,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _search_existence_patterns(self, sql_info: Dict) -> List[SQLMatch]:
+    def _search_existence_patterns(self, sql_info: Dict) -> List[SQLMatch]:
         """Search for patterns that generate existence check queries."""
         matches = []
 
@@ -899,7 +899,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             ]
 
             for pattern in patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -918,7 +918,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             ]
 
             for pattern in validation_patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -931,7 +931,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _search_count_patterns(self, sql_info: Dict) -> List[SQLMatch]:
+    def _search_count_patterns(self, sql_info: Dict) -> List[SQLMatch]:
         """Search for patterns that generate count queries."""
         matches = []
 
@@ -944,7 +944,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             ]
 
             for pattern in patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -957,7 +957,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _search_insertion_patterns(self, sql_info: Dict) -> List[SQLMatch]:
+    def _search_insertion_patterns(self, sql_info: Dict) -> List[SQLMatch]:
         """Search for patterns that generate INSERT queries."""
         matches = []
 
@@ -971,7 +971,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             ]
 
             for pattern in patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -984,7 +984,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _search_update_patterns(self, sql_info: Dict) -> List[SQLMatch]:
+    def _search_update_patterns(self, sql_info: Dict) -> List[SQLMatch]:
         """Search for patterns that generate UPDATE queries."""
         matches = []
 
@@ -998,7 +998,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             ]
 
             for pattern in patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -1011,7 +1011,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _search_association_patterns(self, sql_info: Dict) -> List[SQLMatch]:
+    def _search_association_patterns(self, sql_info: Dict) -> List[SQLMatch]:
         """Search for association-based patterns that might generate the query."""
         matches = []
 
@@ -1031,7 +1031,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                     ]
 
                     for pattern in patterns:
-                        found = await self._search_pattern(pattern, "rb")
+                        found = self._search_pattern(pattern, "rb")
                         for result in found[:3]:  # Limit results
                             matches.append(SQLMatch(
                                 path=result["file"],
@@ -1044,7 +1044,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _search_callback_patterns(self, sql_info: Dict) -> List[SQLMatch]:
+    def _search_callback_patterns(self, sql_info: Dict) -> List[SQLMatch]:
         """Search for callbacks that might trigger the query."""
         matches = []
 
@@ -1058,7 +1058,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             ]
 
             for pattern in callback_patterns:
-                found = await self._search_pattern(pattern, "rb")
+                found = self._search_pattern(pattern, "rb")
                 for result in found[:2]:  # Limit callback matches
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -1071,7 +1071,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    async def _find_usage_sites(self, definition_matches: List[SQLMatch]) -> List[SQLMatch]:
+    def _find_usage_sites(self, definition_matches: List[SQLMatch]) -> List[SQLMatch]:
         """Find where the defined queries are actually used/executed."""
         usage_matches = []
 
@@ -1084,7 +1084,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
                 # Search for usage in ERB files
                 pattern = rf"{re.escape(ivar_name)}\.each\b"
-                found = await self._search_pattern(pattern, "erb")
+                found = self._search_pattern(pattern, "erb")
                 for result in found:
                     usage_matches.append(SQLMatch(
                         path=result["file"],
@@ -1097,7 +1097,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
                 # Also search for direct usage
                 pattern = rf"{re.escape(ivar_name)}\b"
-                found = await self._search_pattern(pattern, "erb")
+                found = self._search_pattern(pattern, "erb")
                 for result in found[:3]:  # Limit to avoid noise
                     if "each" not in result["content"]:  # Avoid duplicates
                         usage_matches.append(SQLMatch(
@@ -1111,7 +1111,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return usage_matches
 
-    async def _search_pattern(self, pattern: str, file_ext: str) -> List[Dict[str, Any]]:
+    def _search_pattern(self, pattern: str, file_ext: str) -> List[Dict[str, Any]]:
         """Execute ripgrep search for a pattern."""
         if not self.project_root:
             self._debug_log("❌ No project root set")
