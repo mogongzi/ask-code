@@ -7,12 +7,11 @@ schema generation, and error handling.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Set, Tuple, Type
+from typing import Any, Dict, List, Optional, Set
 from dataclasses import dataclass
 
 from tools.base_tool import BaseTool
 from tools.ripgrep_tool import RipgrepTool
-from tools.sql_rails_search import SQLRailsSearchTool
 from tools.enhanced_sql_rails_search import EnhancedSQLRailsSearch
 from tools.ast_grep_tool import AstGrepTool
 from tools.ctags_tool import CtagsTool
@@ -45,7 +44,6 @@ class ToolRegistry:
     # Core tool definitions with their classes
     CORE_TOOLS = {
         'ripgrep': RipgrepTool,
-        'sql_rails_search': SQLRailsSearchTool,
         'enhanced_sql_rails_search': EnhancedSQLRailsSearch,
         'ast_grep': AstGrepTool,
         'ctags': CtagsTool,

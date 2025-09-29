@@ -1,5 +1,5 @@
 """
-Refactored Rails ReAct Agent with clean architecture.
+Rails ReAct Agent with clean architecture.
 
 This module provides the main agent class that coordinates all components
 for intelligent Rails code analysis using the ReAct pattern.
@@ -24,9 +24,9 @@ from agent.logging import AgentLogger, log_agent_start, log_agent_complete
 from prompts.system_prompt import RAILS_REACT_SYSTEM_PROMPT
 
 
-class RefactoredRailsAgent:
+class ReactRailsAgent:
     """
-    Refactored Rails ReAct Agent with clean separation of concerns.
+    Rails ReAct Agent with clean separation of concerns.
 
     This agent uses the ReAct pattern: Reasoning → Action → Observation → (repeat) → Answer
     with proper error handling, logging, and modular components.
@@ -34,7 +34,7 @@ class RefactoredRailsAgent:
 
     def __init__(self, config: Optional[AgentConfig] = None, session=None):
         """
-        Initialize the refactored Rails agent.
+        Initialize the Rails agent.
 
         Args:
             config: Agent configuration
@@ -59,7 +59,7 @@ class RefactoredRailsAgent:
         # Performance metrics
         self._start_time: Optional[float] = None
 
-        self.logger.info("RefactoredRailsAgent initialized", {
+        self.logger.info("ReactRailsAgent initialized", {
             "project_root": self.config.project_root,
             "max_steps": self.config.max_react_steps,
             "available_tools": len(self.tool_registry.get_available_tools())

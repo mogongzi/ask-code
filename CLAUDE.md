@@ -48,7 +48,7 @@ This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent a
 - **`tools/base_tool.py`**: Abstract base class for all analysis tools
 - **`tools/transaction_analyzer.py`**: Analyzes complete SQL transaction logs to identify Rails patterns and callback chains
 - **Rail-specific tools**: `model_analyzer.py`, `controller_analyzer.py`, `route_analyzer.py`, `migration_analyzer.py`
-- **Search tools**: `ripgrep_tool.py`, `ast_grep_tool.py`, `ctags_tool.py`, `sql_rails_search.py`, `enhanced_sql_rails_search.py`
+- **Search tools**: `ripgrep_tool.py`, `ast_grep_tool.py`, `ctags_tool.py`, `enhanced_sql_rails_search.py`
 
 **Support Modules:**
 
@@ -62,7 +62,7 @@ This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent a
 
 1. User submits Rails-related query (including SQL transaction logs)
 2. Agent detects query type and selects appropriate tools:
-   - Single SQL queries → `sql_rails_search` or `enhanced_sql_rails_search`
+   - Single SQL queries → `enhanced_sql_rails_search`
    - Transaction logs → `transaction_analyzer` (automatically detects multi-query logs)
    - Model/controller analysis → specific analyzer tools
 3. Tools execute analysis on the Rails codebase
@@ -72,6 +72,7 @@ This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent a
 **Transaction Analysis Feature:**
 
 The agent now automatically detects SQL transaction logs (multiple queries with timestamps) and uses the specialized `transaction_analyzer` tool to:
+
 - Parse complete transaction flows from BEGIN to COMMIT
 - Identify Rails callback chains and triggers
 - Map database operations to likely Rails patterns (audit logging, feed generation, etc.)

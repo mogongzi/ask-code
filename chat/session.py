@@ -1,6 +1,6 @@
 """Chat session orchestration and API interactions."""
 
-from typing import List, Optional, Tuple
+from typing import List
 from rich.console import Console
 
 from streaming_client import StreamingClient, StreamResult

@@ -134,9 +134,13 @@ class ReActState:
 
     def should_force_different_tool(self, step_threshold: int = 2) -> bool:
         """Determine if we should force using a different tool."""
-        # Force different tool if we've used the same tool multiple times
-        if len(self.tools_used) == 1 and self.current_step > step_threshold:
-            return True
+        # Only force different tool if:
+        # 1. The same tool was used multiple times (not just once!)
+        # 2. AND no high-quality results were found
+        if len(self.tools_used) == 1 and self.current_step > step_threshold + 1:  # Allow more attempts
+            # Check if we actually found results - don't force if we have good results
+            if not self.has_high_quality_results():
+                return True
 
         # Force if we're stuck in a loop (last two attempts were the same)
         if len(self.search_attempts) >= 2:
@@ -173,9 +177,6 @@ class ReActState:
                 if tool_name == 'enhanced_sql_rails_search':
                     matches = parsed.get('matches', [])
                     return isinstance(matches, list) and len(matches) > 0
-                elif tool_name == 'sql_rails_search':
-                    results = parsed.get('results', [])
-                    return isinstance(results, list) and len(results) > 0
                 elif tool_name == 'ripgrep':
                     matches = parsed.get('matches', [])
                     return isinstance(matches, list) and len(matches) > 0

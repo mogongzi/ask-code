@@ -110,7 +110,7 @@ class RipgrepTool(BaseTool):
 
             # Add file type filters
             for file_type in file_types:
-                cmd.extend(["--type-add", f"target:{file_type}", "--type", "target"])
+                cmd.extend(["--type-add", f"target:*.{file_type}", "--type", "target"])
 
             # Add pattern and search path
             cmd.extend([pattern, self.project_root])
