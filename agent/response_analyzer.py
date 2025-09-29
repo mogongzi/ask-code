@@ -242,9 +242,6 @@ class ResponseAnalyzer:
             matches = parsed.get('matches', [])
             return isinstance(matches, list) and len(matches) > 0
 
-        elif tool_name == 'sql_rails_search':
-            results = parsed.get('results', [])
-            return isinstance(results, list) and len(results) > 0
 
         elif tool_name == 'ripgrep':
             matches = parsed.get('matches', [])
@@ -274,13 +271,17 @@ class ResponseAnalyzer:
         Returns:
             True if should force different tool, False otherwise
         """
-        # Force different tool if we've used the same tool too many times
+        # Only force different tool if we've used the same tool too many times AND no results found
         for tool_name, stats in react_state.tool_stats.items():
             if stats.usage_count >= repetition_limit:
-                logger.info(f"Tool {tool_name} used {stats.usage_count} times, forcing change")
-                return True
+                # Check if we actually found high-quality results - don't force if we have good results
+                if not react_state.has_high_quality_results():
+                    logger.info(f"Tool {tool_name} used {stats.usage_count} times without results, forcing change")
+                    return True
+                else:
+                    logger.info(f"Tool {tool_name} used {stats.usage_count} times but found results, continuing")
 
-        # Force if we're stuck in a loop
+        # Force if we're stuck in a loop (but only if no results found)
         if react_state.should_force_different_tool(step_threshold=2):
             logger.info("Detected tool usage loop, forcing change")
             return True
@@ -311,7 +312,14 @@ class ResponseAnalyzer:
         tools_used = list(react_state.tools_used)
         unused_tools = react_state.get_unused_tools(available_tools)
 
-        prompt = f"\n⚠️ CONSTRAINT: You have used {tools_used} multiple times without finding results.\n"
+        # Check if we actually found results to make the message accurate
+        has_results = react_state.has_high_quality_results()
+
+        if has_results:
+            prompt = f"\n⚠️ The tool {tools_used} found some results, but let's verify with another approach.\n"
+        else:
+            prompt = f"\n⚠️ CONSTRAINT: Tool {tools_used} didn't find sufficient results.\n"
+
         prompt += f"🚫 FORBIDDEN: Do NOT use these tools again: {', '.join(tools_used)}\n"
         prompt += f"✅ REQUIRED: You MUST use one of these unused tools: {', '.join(unused_tools)}\n"
         prompt += "Choose the most appropriate tool from the unused list and explain your reasoning.\n"
@@ -336,10 +344,6 @@ class ResponseAnalyzer:
             "ripgrep": [
                 "Using ripgrep",
                 "⚙ Using ripgrep"
-            ],
-            "sql_rails_search": [
-                "Using sql_rails_search",
-                "⚙ Using sql_rails_search"
             ],
             "ast_grep": [
                 "Using ast_grep",

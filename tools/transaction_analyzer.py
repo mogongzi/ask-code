@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from .base_tool import BaseTool
-from .sql_rails_search import SQLRailsSearchTool
 from .enhanced_sql_rails_search import EnhancedSQLRailsSearch
 from .model_analyzer import ModelAnalyzer
 
@@ -390,8 +389,7 @@ class TransactionAnalyzer(BaseTool):
         """Use existing SQL search tools to find source code for each pattern."""
         findings = []
 
-        # Initialize search tools
-        sql_search = SQLRailsSearchTool(self.project_root)
+        # Initialize search tool
         enhanced_search = EnhancedSQLRailsSearch(self.project_root)
 
         # Search for source code for each significant query

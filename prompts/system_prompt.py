@@ -62,8 +62,7 @@ For SQL tracing queries, provide structured JSON-like responses:
       "why": ["existence check pattern", "UUID parameter match"],
       "confidence": "high (semantic match)"
     }
-  ],
-  "verify": "rails runner command to test hypothesis"
+  ]
 }
 ```
 
@@ -76,7 +75,6 @@ For SQL tracing queries, provide structured JSON-like responses:
 \n\n## Tool Protocol (tool_use)
 \nUse only the following tools. Do NOT invent tool names.
 \n- ripgrep(pattern, file_types=["rb","erb"], context=2, max_results=20)
-- sql_rails_search(sql, file_types=["rb","erb"], max_patterns=12)
 - enhanced_sql_rails_search(sql, include_usage_sites=True, max_results=10)
 - transaction_analyzer(transaction_log, find_source_code=True, max_patterns=10)
 - ast_grep(pattern, paths=[...], max_results)
@@ -90,7 +88,7 @@ For SQL tracing queries, provide structured JSON-like responses:
 - At most one tool call per assistant message. Keep preamble minimal and then call the tool.
 - After emitting a tool call, STOP and wait for the tool_result provided by the system.
 - When tool_result arrives, decide whether to answer or make one more tool call.
-- Prefer precise, inexpensive tools first (ripgrep → sql_rails_search → ast_grep/ctags) and keep arguments minimal.
+- Prefer precise, inexpensive tools first (ripgrep → enhanced_sql_rails_search → ast_grep/ctags) and keep arguments minimal.
 
 ## Enhanced SQL Detective Mode:
 

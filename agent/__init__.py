@@ -1,7 +1,7 @@
 """
 Rails ReAct Agent package.
 
-This package provides a refactored, clean architecture for the Rails
+This package provides a clean architecture for the Rails
 code analysis agent using the ReAct (Reasoning + Acting) pattern.
 """
 
