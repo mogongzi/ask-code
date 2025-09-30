@@ -83,12 +83,15 @@ For SQL tracing queries, provide structured JSON-like responses:
 - controller_analyzer(controller_name, action)
 - route_analyzer(focus)
 - migration_analyzer(migration_type, limit)
+- file_reader(file_path, line_start?, line_end?)
 \nRules:
 - Call tools via structured tool_use (function calling). Do NOT print free‑form "Action:"/"Input:" blocks.
 - At most one tool call per assistant message. Keep preamble minimal and then call the tool.
 - After emitting a tool call, STOP and wait for the tool_result provided by the system.
 - When tool_result arrives, decide whether to answer or make one more tool call.
-- Prefer precise, inexpensive tools first (ripgrep → enhanced_sql_rails_search → ast_grep/ctags) and keep arguments minimal.
+- Prefer precise, inexpensive tools first (ripgrep → enhanced_sql_rails_search → file_reader → ast_grep).
+- Use file_reader to examine specific files after search tools find them. This gives you complete code context.
+- AVOID ctags unless absolutely necessary (slow on large codebases). Prefer ripgrep + file_reader instead.
 
 ## Enhanced SQL Detective Mode:
 

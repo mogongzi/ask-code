@@ -481,9 +481,25 @@ class TransactionAnalyzer(BaseTool):
 
         # Look for callback information in the model analysis result
         if "callbacks" in model_result:
-            for callback_type, callback_list in model_result["callbacks"].items():
-                if callback_type in ["after_create", "after_save", "after_update", "after_destroy"]:
-                    callbacks.extend([f"{callback_type}: {cb}" for cb in callback_list])
+            callback_data = model_result["callbacks"]
+
+            # Handle both list format (from model_analyzer) and dict format
+            if isinstance(callback_data, list):
+                # List of callback objects with timing/event info
+                for cb in callback_data:
+                    if isinstance(cb, dict):
+                        timing = cb.get("timing", "")
+                        event = cb.get("event", "")
+                        method = cb.get("method", "")
+                        callback_type = f"{timing}_{event}" if timing and event else "callback"
+
+                        if callback_type in ["after_create", "after_save", "after_update", "after_destroy"]:
+                            callbacks.append(f"{callback_type}: {method}")
+            elif isinstance(callback_data, dict):
+                # Dict format: {callback_type: [callback_list]}
+                for callback_type, callback_list in callback_data.items():
+                    if callback_type in ["after_create", "after_save", "after_update", "after_destroy"]:
+                        callbacks.extend([f"{callback_type}: {cb}" for cb in callback_list])
 
         return callbacks
 
@@ -492,8 +508,20 @@ class TransactionAnalyzer(BaseTool):
         associations = []
 
         if "associations" in model_result:
-            for assoc_type, assoc_list in model_result["associations"].items():
-                associations.extend([f"{assoc_type}: {assoc}" for assoc in assoc_list])
+            assoc_data = model_result["associations"]
+
+            # Handle both list format (from model_analyzer) and dict format
+            if isinstance(assoc_data, list):
+                # List of association objects with type/target info
+                for assoc in assoc_data:
+                    if isinstance(assoc, dict):
+                        assoc_type = assoc.get("type", "association")
+                        target = assoc.get("target", "unknown")
+                        associations.append(f"{assoc_type}: {target}")
+            elif isinstance(assoc_data, dict):
+                # Dict format: {assoc_type: [assoc_list]}
+                for assoc_type, assoc_list in assoc_data.items():
+                    associations.extend([f"{assoc_type}: {assoc}" for assoc in assoc_list])
 
         return associations
 

@@ -13,16 +13,17 @@ from rich.console import Console
 class BaseTool(ABC):
     """Abstract base class for all ReAct agent tools."""
 
-    def __init__(self, project_root: Optional[str] = None):
+    def __init__(self, project_root: Optional[str] = None, debug: bool = False):
         """
         Initialize the tool.
 
         Args:
             project_root: Root directory of the Rails project
+            debug: Enable debug mode for the tool
         """
         self.project_root = project_root
         self.console = Console()
-        self.debug_enabled = os.getenv('AGENT_TOOL_DEBUG', '').lower() in ('1', 'true', 'yes')
+        self.debug_enabled = debug
 
     @property
     @abstractmethod

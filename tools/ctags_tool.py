@@ -50,10 +50,22 @@ class CtagsTool(BaseTool):
         except Exception:
             return {"error": "ctags not available in PATH"}
 
-        cmd = ["ctags", "-R", "-x", "--languages=ruby", self.project_root]
+        # Exclude common directories to speed up scanning
+        cmd = [
+            "ctags", "-R", "-x", "--languages=ruby",
+            "--exclude=node_modules",
+            "--exclude=vendor",
+            "--exclude=tmp",
+            "--exclude=log",
+            "--exclude=.git",
+            "--exclude=public/packs",
+            "--exclude=public/assets",
+            self.project_root
+        ]
 
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+            # Increase timeout for large Rails projects
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
             if r.returncode not in (0, 1):
                 return {"error": f"ctags error: {r.stderr.strip()}"}
 

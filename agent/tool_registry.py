@@ -20,6 +20,7 @@ from tools.controller_analyzer import ControllerAnalyzer
 from tools.route_analyzer import RouteAnalyzer
 from tools.migration_analyzer import MigrationAnalyzer
 from tools.transaction_analyzer import TransactionAnalyzer
+from tools.file_reader_tool import FileReaderTool
 
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,7 @@ class ToolRegistry:
         'route_analyzer': RouteAnalyzer,
         'migration_analyzer': MigrationAnalyzer,
         'transaction_analyzer': TransactionAnalyzer,
+        'file_reader': FileReaderTool,
     }
 
     # Tool synonyms for user-friendly names
@@ -65,16 +67,21 @@ class ToolRegistry:
         'find_sql_source': 'enhanced_sql_rails_search',
         'astgrep': 'ast_grep',
         'tags': 'ctags',
+        'read_file': 'file_reader',
+        'show_file': 'file_reader',
+        'cat': 'file_reader',
     }
 
-    def __init__(self, project_root: Optional[str] = None):
+    def __init__(self, project_root: Optional[str] = None, debug: bool = False):
         """
         Initialize the tool registry.
 
         Args:
             project_root: Root directory of the Rails project
+            debug: Enable debug mode for tools
         """
         self.project_root = project_root
+        self.debug = debug
         self.tools: Dict[str, BaseTool] = {}
         self.initialization_errors: List[ToolInitializationError] = []
         self.allowed_tools: Set[str] = set(self.CORE_TOOLS.keys())
@@ -89,7 +96,7 @@ class ToolRegistry:
         for tool_name, tool_class in self.CORE_TOOLS.items():
             try:
                 logger.debug(f"Initializing tool: {tool_name}")
-                self.tools[tool_name] = tool_class(self.project_root)
+                self.tools[tool_name] = tool_class(self.project_root, debug=self.debug)
                 logger.debug(f"Successfully initialized tool: {tool_name}")
             except Exception as e:
                 error = ToolInitializationError(

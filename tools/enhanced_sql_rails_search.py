@@ -39,8 +39,8 @@ class SQLMatch:
 class EnhancedSQLRailsSearch(BaseTool):
     """Intelligent SQL to Rails code search using semantic analysis."""
 
-    def __init__(self, project_root: Optional[str] = None):
-        super().__init__(project_root)
+    def __init__(self, project_root: Optional[str] = None, debug: bool = False):
+        super().__init__(project_root, debug)
         self.analyzer = SemanticSQLAnalyzer()
 
     @property
@@ -661,6 +661,54 @@ class EnhancedSQLRailsSearch(BaseTool):
                             match_type="definition"
                         ))
 
+            elif ".create" in pattern or "create(" in pattern:
+                # Search for Model.create(...) patterns
+                model_pattern = rf"{re.escape(analysis.primary_model)}\.create\b"
+                found = self._search_pattern(model_pattern, "rb")
+                for result in found:
+                    matches.append(SQLMatch(
+                        path=result["file"],
+                        line=result["line"],
+                        snippet=result["content"],
+                        why=["create pattern match", f"matches {pattern}"],
+                        confidence="high (direct match)",
+                        match_type="definition"
+                    ))
+
+            elif ".new" in pattern or "new(" in pattern:
+                # Search for Model.new(...).save patterns
+                # We need to check if .save or .save! appears near the .new call
+                # First, just add all .new matches - they're likely create operations
+                model_pattern = rf"{re.escape(analysis.primary_model)}\.new\b"
+                found = self._search_pattern(model_pattern, "rb")
+                for result in found:
+                    matches.append(SQLMatch(
+                        path=result["file"],
+                        line=result["line"],
+                        snippet=result["content"],
+                        why=["new instance pattern", f"matches {pattern}"],
+                        confidence="medium (new without confirmed save)",
+                        match_type="definition"
+                    ))
+
+            elif "build_" in pattern:
+                # Search for build_association patterns
+                # Extract association name from pattern like "build_page_view(...)"
+                build_match = re.search(r'build_(\w+)', pattern)
+                if build_match:
+                    assoc = build_match.group(1)
+                    build_pattern = rf"build_{re.escape(assoc)}\b"
+                    found = self._search_pattern(build_pattern, "rb")
+                    for result in found:
+                        matches.append(SQLMatch(
+                            path=result["file"],
+                            line=result["line"],
+                            snippet=result["content"],
+                            why=["build association match", f"matches {pattern}"],
+                            confidence="medium (association build)",
+                            match_type="definition"
+                        ))
+
             elif ".where" in pattern:
                 model_pattern = rf"{re.escape(analysis.primary_model)}\.where\b"
                 found = self._search_pattern(model_pattern, "rb")
@@ -749,6 +797,62 @@ class EnhancedSQLRailsSearch(BaseTool):
                             confidence="high (aggregation)",
                             match_type="definition"
                         ))
+
+        elif analysis.intent == QueryIntent.DATA_INSERTION:
+            # Search for INSERT patterns: .create, .new + .save, build_*
+            if analysis.primary_model:
+                model = analysis.primary_model
+                # Search for Model.create or Model.new patterns
+                patterns = [
+                    (rf"{re.escape(model)}\.create\b", "create pattern"),
+                    (rf"{re.escape(model)}\.new\b", "new instance pattern"),
+                    (r"\.save!?\b", "save pattern")
+                ]
+                for pattern, description in patterns:
+                    found = self._search_pattern(pattern, "rb")
+                    for result in found[:5]:  # Limit per pattern
+                        # For .save, check if model is mentioned nearby
+                        if description == "save pattern":
+                            if model.lower() in result["content"].lower():
+                                matches.append(SQLMatch(
+                                    path=result["file"],
+                                    line=result["line"],
+                                    snippet=result["content"],
+                                    why=["insert operation", description, f"model: {model}"],
+                                    confidence="high (insert pattern)",
+                                    match_type="definition"
+                                ))
+                        else:
+                            matches.append(SQLMatch(
+                                path=result["file"],
+                                line=result["line"],
+                                snippet=result["content"],
+                                why=["insert operation", description, f"model: {model}"],
+                                confidence="high (insert pattern)",
+                                match_type="definition"
+                            ))
+
+        elif analysis.intent == QueryIntent.DATA_UPDATE:
+            # Search for UPDATE patterns
+            if analysis.primary_model:
+                model = analysis.primary_model
+                patterns = [
+                    (rf"{re.escape(model)}\.update\b", "update method"),
+                    (rf"{re.escape(model)}\.update_all\b", "bulk update"),
+                    (r"\.save\b", "save after modification")
+                ]
+                for pattern, description in patterns:
+                    found = self._search_pattern(pattern, "rb")
+                    for result in found[:3]:
+                        if model.lower() in result["content"].lower():
+                            matches.append(SQLMatch(
+                                path=result["file"],
+                                line=result["line"],
+                                snippet=result["content"],
+                                why=["update operation", description, f"model: {model}"],
+                                confidence="medium (update pattern)",
+                                match_type="definition"
+                            ))
 
         return matches
 
@@ -1121,6 +1225,8 @@ class EnhancedSQLRailsSearch(BaseTool):
             "rg", "--line-number", "--with-filename", "-i",
             "--type-add", f"target:*.{file_ext}",
             "--type", "target",
+            # Respect .gitignore but don't exclude common code directories
+            # This avoids searching node_modules, tmp, log, etc. while still finding lib/, vendor/
             pattern,
             self.project_root
         ]
