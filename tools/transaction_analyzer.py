@@ -386,34 +386,44 @@ class TransactionAnalyzer(BaseTool):
             return 0.0
 
     def _find_source_code(self, flow: TransactionFlow, max_patterns: int) -> List[Dict[str, Any]]:
-        """Use existing SQL search tools to find source code for each pattern."""
+        """Find transaction source code using multi-signal contextual search strategy."""
         findings = []
 
-        # Initialize search tool
-        enhanced_search = EnhancedSQLRailsSearch(self.project_root)
+        if not self.project_root:
+            return findings
 
-        # Search for source code for each significant query
-        significant_queries = [q for q in flow.queries if q.operation in ['INSERT', 'UPDATE'] and q.table]
+        # Strategy 1: Transaction fingerprint matching (PRIMARY)
+        # Find the wrapping transaction block by matching table + column signatures
+        transaction_findings = self._find_transaction_wrapper(flow)
+        if transaction_findings:
+            findings.extend(transaction_findings)
+            self._debug_log(f"Transaction wrapper search found {len(transaction_findings)} matches")
 
-        for query in significant_queries[:max_patterns]:
-            try:
-                # Use enhanced search for better results
-                search_result = enhanced_search.execute({
-                    "sql": query.sql,
-                    "include_usage_sites": True,
-                    "max_results": 5
-                })
+        # Strategy 2: Individual query pattern matching (FALLBACK)
+        # If transaction search fails or finds too few results, fall back to per-query search
+        if len(findings) < 2:
+            enhanced_search = EnhancedSQLRailsSearch(self.project_root)
+            significant_queries = [q for q in flow.queries if q.operation in ['INSERT', 'UPDATE'] and q.table]
 
-                if search_result and not search_result.get("error"):
-                    findings.append({
-                        "query": f"{query.operation} {query.table}",
-                        "sql": query.sql[:100] + "..." if len(query.sql) > 100 else query.sql,
-                        "search_results": search_result,
-                        "timestamp": query.timestamp
+            for query in significant_queries[:max_patterns]:
+                try:
+                    search_result = enhanced_search.execute({
+                        "sql": query.sql,
+                        "include_usage_sites": False,
+                        "max_results": 3
                     })
-            except Exception as e:
-                self._debug_log(f"Search failed for {query.table}: {str(e)}")
-                continue
+
+                    if search_result and not search_result.get("error"):
+                        findings.append({
+                            "query": f"{query.operation} {query.table}",
+                            "sql": query.sql[:100] + "..." if len(query.sql) > 100 else query.sql,
+                            "search_results": search_result,
+                            "timestamp": query.timestamp,
+                            "search_strategy": "individual_query"
+                        })
+                except Exception as e:
+                    self._debug_log(f"Individual query search failed for {query.table}: {str(e)}")
+                    continue
 
         return findings
 
@@ -580,14 +590,254 @@ class TransactionAnalyzer(BaseTool):
         # Source code findings
         if source_findings:
             summary_lines.append("=== Source Code Locations ===")
-            for finding in source_findings:
-                summary_lines.append(f"• {finding['query']}:")
-                if finding.get('search_results', {}).get('matches'):
-                    for match in finding['search_results']['matches'][:3]:  # Top 3 matches
-                        summary_lines.append(f"  - {match.get('file', 'unknown')}:{match.get('line', '?')}")
+
+            # Separate transaction wrapper findings from individual query findings
+            transaction_findings = [f for f in source_findings if f.get('search_strategy') == 'transaction_fingerprint']
+            query_findings = [f for f in source_findings if f.get('search_strategy') != 'transaction_fingerprint']
+
+            # Show transaction wrapper findings first (highest priority)
+            if transaction_findings:
+                summary_lines.append("🎯 Transaction Wrapper (High Confidence):")
+                for finding in transaction_findings[:2]:  # Top 2 transaction matches
+                    if finding.get('search_results', {}).get('matches'):
+                        for match in finding['search_results']['matches'][:1]:  # Just the top match
+                            summary_lines.append(f"  📍 {match.get('file', 'unknown')}:{match.get('line', '?')}")
+                            summary_lines.append(f"     Confidence: {match.get('confidence', 'unknown')}")
+                            if finding.get('matched_columns'):
+                                summary_lines.append(f"     Matched columns: {', '.join(finding['matched_columns'][:5])}")
+                summary_lines.append("")
+
+            # Show individual query findings if available
+            if query_findings:
+                summary_lines.append("Individual Query Matches:")
+                for finding in query_findings[:3]:  # Top 3 query matches
+                    summary_lines.append(f"• {finding['query']}:")
+                    if finding.get('search_results', {}).get('matches'):
+                        for match in finding['search_results']['matches'][:2]:  # Top 2 matches per query
+                            summary_lines.append(f"  - {match.get('file', 'unknown')}:{match.get('line', '?')}")
                 summary_lines.append("")
 
         return "\n".join(summary_lines)
+
+    def _find_transaction_wrapper(self, flow: TransactionFlow) -> List[Dict[str, Any]]:
+        """
+        Find the transaction wrapper using multi-signal search:
+        1. Extract signature columns from primary INSERT
+        2. Find files mentioning table + multiple signature columns
+        3. Search for transaction blocks in those files
+        """
+        findings = []
+
+        # Get the primary INSERT (first meaningful insert, usually the trigger)
+        primary_insert = self._get_primary_insert(flow)
+        if not primary_insert:
+            self._debug_log("No primary INSERT found in transaction")
+            return findings
+
+        self._debug_log(f"Primary INSERT table: {primary_insert.table}")
+
+        # Extract signature columns (distinctive, non-generic columns)
+        signature_columns = self._extract_signature_columns(primary_insert)
+        self._debug_log(f"Signature columns: {signature_columns}")
+
+        if len(signature_columns) < 2:
+            self._debug_log("Too few signature columns, skipping fingerprint matching")
+            return findings
+
+        # Find candidate files with table + multiple column mentions
+        candidate_files = self._find_files_with_table_and_columns(
+            primary_insert.table,
+            signature_columns,
+            min_column_matches=min(3, len(signature_columns) - 1)
+        )
+
+        self._debug_log(f"Found {len(candidate_files)} candidate files")
+
+        # Search for transaction blocks in candidate files
+        transaction_matches = self._search_transaction_blocks_in_files(
+            candidate_files,
+            primary_insert.table
+        )
+
+        # Convert matches to findings format
+        for match in transaction_matches:
+            findings.append({
+                "query": f"TRANSACTION wrapper for {primary_insert.table}",
+                "sql": f"ActiveRecord::Base.transaction (wrapping {len(flow.queries)} queries)",
+                "search_results": {
+                    "matches": [{
+                        "file": match['file'],
+                        "line": match['line'],
+                        "snippet": match['snippet'],
+                        "confidence": match['confidence'],
+                        "why": match['why']
+                    }]
+                },
+                "timestamp": flow.queries[0].timestamp if flow.queries else "",
+                "search_strategy": "transaction_fingerprint",
+                "column_matches": match.get('column_matches', 0),
+                "matched_columns": match.get('matched_columns', [])
+            })
+
+        return findings
+
+    def _get_primary_insert(self, flow: TransactionFlow) -> Optional[SQLQuery]:
+        """Get the first meaningful INSERT in the transaction (usually the trigger)."""
+        for query in flow.queries:
+            if query.operation == 'INSERT' and query.table:
+                # Skip transaction control markers
+                if query.table not in ['', 'BEGIN', 'COMMIT']:
+                    return query
+        return None
+
+    def _extract_signature_columns(self, insert_query: SQLQuery) -> List[str]:
+        """Extract distinctive column names from INSERT query."""
+        sql = insert_query.sql
+
+        # Extract column names from INSERT INTO table (col1, col2, ...) VALUES (...)
+        insert_match = re.search(r'INSERT\s+INTO\s+["`]?\w+["`]?\s*\(([^)]+)\)', sql, re.IGNORECASE)
+        if not insert_match:
+            return []
+
+        columns_str = insert_match.group(1)
+        # Remove backticks and quotes, split by comma
+        columns = [col.strip().strip('"`') for col in columns_str.split(',')]
+
+        # Filter out generic/common columns that appear in most tables
+        generic_columns = {
+            'id', 'created_at', 'updated_at', 'deleted_at',
+            'company_id', 'member_id', 'group_id', 'owner_id',
+            'created_by', 'updated_by', 'deleted_by'
+        }
+
+        signature_columns = [col for col in columns if col.lower() not in generic_columns]
+
+        # Return top 8 most distinctive columns
+        return signature_columns[:8]
+
+    def _find_files_with_table_and_columns(
+        self, table_name: str, signature_columns: List[str], min_column_matches: int
+    ) -> List[Dict[str, Any]]:
+        """Find files that mention both the table and multiple signature columns."""
+        if not self.project_root:
+            return []
+
+        import subprocess
+        from pathlib import Path
+
+        # Search for files mentioning the table name or model name
+        model_name = self._table_to_model_name(table_name)
+        table_pattern = f"({table_name}|{model_name})"
+
+        cmd = [
+            "rg", "-l", "-i",  # List files only, case insensitive
+            "--type", "ruby",
+            table_pattern,
+            self.project_root
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            if result.returncode not in (0, 1):
+                self._debug_log(f"Ripgrep failed: {result.stderr}")
+                return []
+
+            files_with_table = result.stdout.strip().split('\n') if result.stdout.strip() else []
+            self._debug_log(f"Files mentioning {table_name}: {len(files_with_table)}")
+
+        except Exception as e:
+            self._debug_log(f"Error searching for table: {e}")
+            return []
+
+        # Score each file by how many signature columns it contains
+        scored_files = []
+        for file_path in files_with_table[:100]:  # Limit to 100 files
+            if not file_path:
+                continue
+
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+
+                # Count signature column mentions
+                matched_columns = [col for col in signature_columns if col in content]
+                column_match_count = len(matched_columns)
+
+                if column_match_count >= min_column_matches:
+                    scored_files.append({
+                        'file': str(Path(file_path).relative_to(self.project_root)),
+                        'score': column_match_count,
+                        'matched_columns': matched_columns,
+                        'total_columns': len(signature_columns)
+                    })
+
+            except Exception as e:
+                self._debug_log(f"Error reading file {file_path}: {e}")
+                continue
+
+        # Sort by score (highest column match count first)
+        scored_files.sort(key=lambda x: x['score'], reverse=True)
+
+        self._debug_log(f"High-confidence files with {min_column_matches}+ columns: {len(scored_files)}")
+        return scored_files[:10]  # Return top 10 candidates
+
+    def _search_transaction_blocks_in_files(
+        self, candidate_files: List[Dict[str, Any]], table_name: str
+    ) -> List[Dict[str, Any]]:
+        """Search for transaction blocks within candidate files."""
+        if not self.project_root:
+            return []
+
+        from pathlib import Path
+
+        matches = []
+
+        for candidate in candidate_files:
+            file_path = Path(self.project_root) / candidate['file']
+
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+
+                for i, line in enumerate(lines):
+                    # Look for transaction blocks
+                    if 'transaction do' in line.lower() or 'activerecord::base.transaction' in line.lower():
+                        # Get context (next 30 lines to see what's inside the transaction)
+                        context_end = min(i + 30, len(lines))
+                        context_lines = lines[i:context_end]
+                        context_text = ''.join(context_lines).lower()
+
+                        # Check if this transaction mentions the table or model
+                        model_name = self._table_to_model_name(table_name)
+                        if table_name.lower() in context_text or model_name.lower() in context_text:
+                            # Calculate confidence based on column matches
+                            confidence_level = "very high" if candidate['score'] >= 5 else \
+                                             "high" if candidate['score'] >= 3 else "medium"
+
+                            matches.append({
+                                'file': candidate['file'],
+                                'line': i + 1,
+                                'snippet': line.strip(),
+                                'confidence': f"{confidence_level} ({candidate['score']}/{candidate['total_columns']} columns)",
+                                'why': [
+                                    "Transaction block wrapping table operations",
+                                    f"Table: {table_name}",
+                                    f"Matched columns: {', '.join(candidate['matched_columns'][:5])}",
+                                    f"Column signature match: {candidate['score']}/{candidate['total_columns']}"
+                                ],
+                                'column_matches': candidate['score'],
+                                'matched_columns': candidate['matched_columns'],
+                                'context_preview': ''.join(context_lines[:5])
+                            })
+
+            except Exception as e:
+                self._debug_log(f"Error reading file {file_path}: {e}")
+                continue
+
+        # Sort by confidence (column match count)
+        matches.sort(key=lambda x: x['column_matches'], reverse=True)
+
+        return matches[:5]  # Return top 5 matches
 
     def _create_flow_visualization(self, flow: TransactionFlow) -> Dict[str, Any]:
         """Create a visual representation of the transaction flow."""
