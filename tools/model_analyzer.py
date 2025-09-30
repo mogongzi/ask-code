@@ -69,10 +69,13 @@ class ModelAnalyzer(BaseTool):
             "focus": focus
         })
 
-        # Find model file
-        model_file = Path(self.project_root) / "app" / "models" / f"{model_name.lower()}.rb"
+        # Find model file - convert PascalCase to snake_case
+        file_name = self._model_name_to_file_name(model_name)
+        model_file = Path(self.project_root) / "app" / "models" / f"{file_name}.rb"
         if not model_file.exists():
-            return f"Error: Model file not found: {model_file}"
+            error_result = {"error": f"Model file not found: {model_file}"}
+            self._debug_output(error_result)
+            return error_result
 
         try:
             content = model_file.read_text(encoding='utf-8')
@@ -81,6 +84,9 @@ class ModelAnalyzer(BaseTool):
             analysis["model_name"] = model_name
             analysis["file_path"] = str(model_file.relative_to(self.project_root))
 
+            # Add summary
+            analysis["summary"] = self._generate_summary(analysis)
+
             self._debug_output(analysis)
             return analysis
 
@@ -88,6 +94,22 @@ class ModelAnalyzer(BaseTool):
             error_result = {"error": f"Error analyzing model {model_name}: {e}"}
             self._debug_output(error_result)
             return error_result
+
+    def _model_name_to_file_name(self, model_name: str) -> str:
+        """
+        Convert PascalCase model name to snake_case file name.
+
+        Examples:
+            PageView -> page_view
+            User -> user
+            APIKey -> api_key
+            HTTPRequest -> http_request
+        """
+        import re
+        # Insert underscore between lowercase and uppercase, or between letter and uppercase followed by lowercase
+        snake_case = re.sub(r'([a-z\d])([A-Z])', r'\1_\2', model_name)
+        snake_case = re.sub(r'([A-Z]+)([A-Z][a-z])', r'\1_\2', snake_case)
+        return snake_case.lower()
 
     def _analyze_model_content(self, content: str, focus: str) -> Dict[str, Any]:
         """
@@ -209,21 +231,98 @@ class ModelAnalyzer(BaseTool):
         return None
 
     def _extract_method(self, line: str, line_number: int) -> Optional[Dict[str, Any]]:
-        """Extract method definition from line."""
-        method_pattern = r'def\s+(\w+)'
+        """Extract method definition from line (signature only, not full body)."""
+        method_pattern = r'def\s+(self\.)?(\w+)(\(.*?\))?'
         match = re.search(method_pattern, line)
 
         if match:
-            method_name = match.group(1)
-            is_class_method = line.strip().startswith('def self.')
+            is_class_method = bool(match.group(1))
+            method_name = match.group(2)
+            parameters = match.group(3) or "()"
 
             return {
                 "line": line_number,
-                "content": line,
+                "signature": line,  # Just the 'def ...' line
                 "name": method_name,
+                "parameters": parameters,
                 "type": "class_method" if is_class_method else "instance_method"
             }
         return None
+
+    def _generate_summary(self, analysis: Dict[str, Any]) -> str:
+        """Generate concise summary of model analysis."""
+        parts = []
+
+        if analysis["associations"]:
+            assoc_types = {}
+            for a in analysis["associations"]:
+                assoc_types.setdefault(a["type"], []).append(a["target"])
+            assoc_str = ", ".join([f"{k}: {len(v)}" for k, v in assoc_types.items()])
+            parts.append(f"Associations: {assoc_str}")
+
+        if analysis["validations"]:
+            parts.append(f"Validations: {len(analysis['validations'])}")
+
+        if analysis["callbacks"]:
+            parts.append(f"Callbacks: {len(analysis['callbacks'])}")
+
+        if analysis["methods"]:
+            method_count = len(analysis["methods"])
+            parts.append(f"Methods: {method_count}")
+
+        return " | ".join(parts) if parts else "Empty model"
+
+    def format_result(self, result: Any) -> str:
+        """Format model analysis result - compact summary instead of full JSON."""
+        if isinstance(result, str):
+            return result  # Error message
+
+        if not isinstance(result, dict):
+            return str(result)
+
+        # Build compact text summary
+        lines = []
+        lines.append(f"## Model: {result.get('model_name', 'Unknown')}")
+        lines.append(f"**File**: `{result.get('file_path', 'Unknown')}`\n")
+
+        if result.get("summary"):
+            lines.append(f"**Summary**: {result['summary']}\n")
+
+        # Associations
+        if result.get("associations"):
+            lines.append(f"### Associations ({len(result['associations'])})")
+            for assoc in result["associations"][:10]:
+                lines.append(f"- Line {assoc['line']}: `{assoc['type']} :{assoc['target']}`")
+            if len(result["associations"]) > 10:
+                lines.append(f"  ... +{len(result['associations']) - 10} more\n")
+
+        # Validations
+        if result.get("validations"):
+            lines.append(f"\n### Validations ({len(result['validations'])})")
+            for val in result["validations"][:10]:
+                lines.append(f"- Line {val['line']}: `{val['type']}` on {val['field']}")
+            if len(result["validations"]) > 10:
+                lines.append(f"  ... +{len(result['validations']) - 10} more")
+
+        # Callbacks
+        if result.get("callbacks"):
+            lines.append(f"\n### Callbacks ({len(result['callbacks'])})")
+            for cb in result["callbacks"][:10]:
+                method = cb.get('method', 'block')
+                lines.append(f"- Line {cb['line']}: `{cb['timing']}_{cb['event']}` → {method}")
+            if len(result["callbacks"]) > 10:
+                lines.append(f"  ... +{len(result['callbacks']) - 10} more")
+
+        # Methods (just names and line numbers)
+        if result.get("methods"):
+            lines.append(f"\n### Methods ({len(result['methods'])})")
+            for method in result["methods"][:10]:
+                method_type = "class" if method.get("type") == "class_method" else "instance"
+                lines.append(f"- Line {method['line']}: `{method['name']}` ({method_type})")
+            if len(result["methods"]) > 10:
+                lines.append(f"  ... +{len(result['methods']) - 10} more")
+
+        return "\n".join(lines)
 
     def validate_input(self, input_params: Dict[str, Any]) -> bool:
         """Validate model analyzer input parameters."""

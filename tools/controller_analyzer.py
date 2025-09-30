@@ -69,10 +69,15 @@ class ControllerAnalyzer(BaseTool):
             "action": action
         })
 
+        # Convert controller name to snake_case (e.g., "WorkPages" -> "work_pages")
+        snake_case_name = self._to_snake_case(controller_name)
+
         # Find controller file
-        controller_file = Path(self.project_root) / "app" / "controllers" / f"{controller_name.lower()}_controller.rb"
+        controller_file = Path(self.project_root) / "app" / "controllers" / f"{snake_case_name}_controller.rb"
         if not controller_file.exists():
-            return f"Error: Controller file not found: {controller_file}"
+            error_result = {"error": f"Controller file not found: {controller_file}"}
+            self._debug_output(error_result)
+            return error_result
 
         try:
             content = controller_file.read_text(encoding='utf-8')
@@ -80,6 +85,9 @@ class ControllerAnalyzer(BaseTool):
 
             analysis["controller_name"] = controller_name
             analysis["file_path"] = str(controller_file.relative_to(self.project_root))
+
+            # Add summary
+            analysis["summary"] = self._generate_summary(analysis)
 
             self._debug_output(analysis)
             return analysis
@@ -159,19 +167,26 @@ class ControllerAnalyzer(BaseTool):
             if method_match:
                 # Finish previous method
                 if current_method:
-                    current_method["content"] = method_content
+                    # Don't include full content - just count lines
+                    current_method["line_count"] = len(method_content)
                     self._categorize_method(current_method, analysis, in_private, in_protected)
 
                 # Start new method
                 current_method = method_match
                 method_content = [line_stripped]
             elif current_method:
-                # Add line to current method
+                # Track line count only
                 method_content.append(line_stripped)
+                # Check for 'end' to close method
+                if line_stripped == 'end':
+                    current_method["line_count"] = len(method_content)
+                    self._categorize_method(current_method, analysis, in_private, in_protected)
+                    current_method = None
+                    method_content = []
 
-        # Finish last method
+        # Finish last method if still open
         if current_method:
-            current_method["content"] = method_content
+            current_method["line_count"] = len(method_content)
             self._categorize_method(current_method, analysis, in_private, in_protected)
 
         # Filter by specific action if requested
@@ -236,6 +251,78 @@ class ControllerAnalyzer(BaseTool):
         else:
             # Other public methods
             analysis["actions"].append(method)
+
+    def _generate_summary(self, analysis: Dict[str, Any]) -> str:
+        """Generate concise summary of controller analysis."""
+        parts = []
+
+        if analysis["actions"]:
+            action_names = [a["name"] for a in analysis["actions"][:10]]  # Limit to first 10
+            more = len(analysis["actions"]) - 10
+            suffix = f" (+{more} more)" if more > 0 else ""
+            parts.append(f"Actions: {', '.join(action_names)}{suffix}")
+
+        if analysis["filters"]:
+            filter_types = {f["type"] for f in analysis["filters"]}
+            parts.append(f"Filters: {', '.join(filter_types)}")
+
+        if analysis["concerns"]:
+            concern_names = [c["concern"] for c in analysis["concerns"]]
+            parts.append(f"Includes: {', '.join(concern_names)}")
+
+        return " | ".join(parts) if parts else "Empty controller"
+
+    def format_result(self, result: Any) -> str:
+        """Format controller analysis result - compact summary instead of full JSON."""
+        if isinstance(result, str):
+            return result  # Error message
+
+        if not isinstance(result, dict):
+            return str(result)
+
+        # Build compact text summary
+        lines = []
+        lines.append(f"## Controller: {result.get('controller_name', 'Unknown')}")
+        lines.append(f"**File**: `{result.get('file_path', 'Unknown')}`\n")
+
+        if result.get("summary"):
+            lines.append(f"**Summary**: {result['summary']}\n")
+
+        # Show only action names and line numbers (not full content!)
+        if result.get("actions"):
+            lines.append(f"### Actions ({len(result['actions'])})")
+            for action in result["actions"][:15]:  # Limit to first 15
+                line_info = f"Line {action['line']}: `{action['name']}`"
+                if "line_count" in action:
+                    line_info += f" ({action['line_count']} lines)"
+                lines.append(f"- {line_info}")
+            if len(result["actions"]) > 15:
+                lines.append(f"  ... +{len(result['actions']) - 15} more actions\n")
+
+        # Show filter summary
+        if result.get("filters"):
+            lines.append(f"\n### Filters ({len(result['filters'])})")
+            for filt in result["filters"][:10]:
+                lines.append(f"- Line {filt['line']}: `{filt['type']}` → `{filt['method']}`")
+            if len(result["filters"]) > 10:
+                lines.append(f"  ... +{len(result['filters']) - 10} more filters")
+
+        return "\n".join(lines)
+
+    def _to_snake_case(self, name: str) -> str:
+        """
+        Convert CamelCase or PascalCase to snake_case.
+
+        Examples:
+            WorkPages -> work_pages
+            Users -> users
+            APIController -> api_controller
+        """
+        # Insert underscore before uppercase letters that follow lowercase letters
+        s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+        # Insert underscore before uppercase letters that follow lowercase or uppercase+lowercase
+        s2 = re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1)
+        return s2.lower()
 
     def validate_input(self, input_params: Dict[str, Any]) -> bool:
         """Validate controller analyzer input parameters."""

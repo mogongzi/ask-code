@@ -8,7 +8,7 @@
 
 ## Project Structure & Module Organization
 
-- `ask_code.py` is the primary CLI for Rails-focused analysis, wiring provider selection, interactive input, and the ReAct agent loop.
+- `ride_rails.py` is the primary CLI for Rails-focused analysis, wiring provider selection, interactive input, and the ReAct agent loop.
 - `react_rails_agent.py` contains the agent orchestration and tool wiring; `agent_tool_executor.py` mediates tool execution from agent calls.
 - `streaming_client.py` manages SSE/stream rendering; conversational state and token tracking live in `chat/`.
 - Context handling utilities live in `context/`; provider adapters are under `providers/`; prompt scaffolds sit in `prompts/`.
@@ -19,7 +19,7 @@
 
 - Activate the virtualenv before Python tasks: `source .venv/bin/activate`.
 - Install Python dependencies with `pip install -r requirements.txt` (add `--upgrade` for refreshes).
-- Launch the CLI against your proxy endpoint, e.g. `python3 ask_code.py --provider bedrock --url http://127.0.0.1:8000/invoke --project-root /path/to/rails-app`.
+- Launch the CLI against your proxy endpoint, e.g. `python3 ride_rails.py --provider bedrock --url http://127.0.0.1:8000/invoke --project-root /path/to/rails-app`.
 - Replay conversations or debug rendering using `python3 -m streaming_client < transcript.jsonl` when available.
 - Run test suites via `pytest -q`; target modules with `pytest tools/test_controller_analyzer.py -q` or `pytest -k agents` for focused runs.
 

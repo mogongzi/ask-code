@@ -256,7 +256,7 @@ class StructuredLogger:
         elif status == "error":
             self.console.print(f"[red]✗ {message}[/red]")
         elif status == "working":
-            self.console.print(f"[blue]⚙ {message}[/blue]")
+            self.console.print(f"[blue]⚛ {message}[/blue]")
         else:
             self.console.print(f"[dim]• {message}[/dim]")
 

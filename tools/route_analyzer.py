@@ -50,10 +50,10 @@ class RouteAnalyzer(BaseTool):
             Route analysis results
         """
         if not self.validate_input(input_params):
-            return "Error: Invalid input parameters"
+            return {"error": "Invalid input parameters"}
 
         if not self.project_root or not Path(self.project_root).exists():
-            return "Error: Project root not found"
+            return {"error": "Project root not found"}
 
         focus = input_params.get("focus", "all")
         controller_filter = input_params.get("controller")
@@ -61,7 +61,7 @@ class RouteAnalyzer(BaseTool):
         # Find routes file
         routes_file = Path(self.project_root) / "config" / "routes.rb"
         if not routes_file.exists():
-            return f"Error: Routes file not found: {routes_file}"
+            return {"error": f"Routes file not found: {routes_file}"}
 
         try:
             content = routes_file.read_text(encoding='utf-8')
@@ -72,7 +72,7 @@ class RouteAnalyzer(BaseTool):
             return analysis
 
         except Exception as e:
-            return f"Error analyzing routes: {e}"
+            return {"error": f"Error analyzing routes: {e}"}
 
     def _analyze_routes_content(self, content: str, focus: str, controller_filter: Optional[str]) -> Dict[str, Any]:
         """

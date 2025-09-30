@@ -23,8 +23,8 @@ def show_help_message(console) -> None:
     console.print("  [bold green]/rag clear[/bold green]           - Remove saved index")
     console.print()
     console.print("[bold cyan]Rails Code Analysis:[/bold cyan]")
-    console.print("  [bold green]ask_code.py[/bold green] --project <path> - Dedicated Rails analysis tool")
-    console.print("  [dim]Example: python ask_code.py --project /path/to/rails/app[/dim]")
+    console.print("  [bold green]ride_rails.py[/bold green] --project <path> - Dedicated Rails analysis tool")
+    console.print("  [dim]Example: python ride_rails.py --project /path/to/rails/app[/dim]")
     console.print("  [bold green]/tools[/bold green]          - Show agent tools and CLI availability")
     console.print()
     console.print("[bold cyan]Session Commands:[/bold cyan]")
@@ -317,9 +317,9 @@ def handle_rag_command(user_input: str, rag_manager, console) -> bool:
 
 
 def handle_agent_command(user_input: str, react_agent, console) -> bool:
-    """Handle /agent commands - now deprecated in favor of ask_code.py."""
+    """Handle /agent commands - now deprecated in favor of ride_rails.py."""
     if console:
-        console.print("[yellow]/agent commands now live in ask_code.py[/yellow]")
+        console.print("[yellow]/agent commands now live in ride_rails.py[/yellow]")
         console.print("[cyan]For Rails code analysis, use:[/cyan]")
-        console.print("[green]  python ask_code.py --project /path/to/rails/app[/green]")
+        console.print("[green]  python ride_rails.py --project /path/to/rails/app[/green]")
     return True

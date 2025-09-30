@@ -18,6 +18,7 @@ from util.command_helpers import handle_special_commands
 from util.input_helpers import should_exit_from_input
 from chat.session import ChatSession
 from streaming_client import StreamingClient
+from non_streaming_client import NonStreamingClient
 
 # Import agent components
 from agent.react_rails_agent import ReactRailsAgent
@@ -33,9 +34,19 @@ console = Console()
 _ABORT = False
 
 
-def create_streaming_client():
-    """Create and return streaming client."""
-    return StreamingClient()
+def create_streaming_client(use_streaming: bool = False):
+    """Create and return streaming or non-streaming client.
+
+    Args:
+        use_streaming: If True, use StreamingClient (SSE). If False, use NonStreamingClient (single request).
+
+    Returns:
+        StreamingClient or NonStreamingClient instance
+    """
+    if use_streaming:
+        return StreamingClient()
+    else:
+        return NonStreamingClient()
 
 
 def get_agent_input(console, prompt_style, display_string, thinking_mode, user_history, tools_enabled):
@@ -106,6 +117,7 @@ def repl(
     provider,
     project_root: str,
     debug: bool = False,
+    use_streaming: bool = False,
 ) -> int:
     """
     Enhanced interactive Rails code analysis loop with ReAct agent.
@@ -115,6 +127,7 @@ def repl(
         provider: Provider adapter (bedrock/azure)
         project_root: Rails project root directory
         debug: Enable debug mode
+        use_streaming: Use streaming API (SSE) vs non-streaming (single request)
 
     Returns:
         Exit code (0 for success)
@@ -139,8 +152,10 @@ def repl(
     # Extract provider name
     provider_name = provider.__name__.split('.')[-1] if hasattr(provider, '__name__') else "bedrock"
 
-    # Create streaming client
-    streaming_client = create_streaming_client()
+    # Create client (streaming or non-streaming)
+    client = create_streaming_client(use_streaming=use_streaming)
+    client_type = "streaming (SSE)" if use_streaming else "non-streaming (single request)"
+    console.print(f"[dim]Using {client_type} client[/dim]")
 
     # Create session
     session = ChatSession(
@@ -152,9 +167,9 @@ def repl(
         provider_name=provider_name
     )
 
-    # Add usage tracker and streaming client to session
+    # Add usage tracker and client to session
     session.usage_tracker = usage
-    session.streaming_client = streaming_client
+    session.streaming_client = client
 
     # Initialize ReAct agent
     try:
@@ -174,7 +189,7 @@ def repl(
         # Log initialization for debugging
         if debug:
             logger = AgentLogger.get_logger()
-            logger.info(f"Created agent for ask_code.py: {project_root}")
+            logger.info(f"Created agent for ride_rails.py: {project_root}")
             status = react_agent.get_status()
             logger.debug(f"Agent status: {status}")
 
@@ -196,7 +211,11 @@ def repl(
     try:
         available_tools = react_agent.tool_registry.get_available_tools()
         agent_executor = AgentToolExecutor(available_tools)
-        session.streaming_client = StreamingClient(tool_executor=agent_executor)
+        # Recreate client with tool executor
+        if use_streaming:
+            session.streaming_client = StreamingClient(tool_executor=agent_executor)
+        else:
+            session.streaming_client = NonStreamingClient(tool_executor=agent_executor)
         console.print(f"[dim]Tool executor configured with {len(available_tools)} tools[/dim]")
 
         if debug:
@@ -332,7 +351,7 @@ def repl(
 def main(argv: Optional[List[str]] = None) -> int:
     """Enhanced CLI entry point with better argument parsing."""
     parser = argparse.ArgumentParser(
-        prog="ask-code",
+        prog="ride-rails",
         description="Enhanced Rails Code Analysis Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -362,6 +381,11 @@ Examples:
         "--debug",
         action="store_true",
         help="Enable debug mode with detailed logging and error traces"
+    )
+    parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help="Use streaming API (SSE) instead of non-streaming (default: non-streaming)"
     )
     args = parser.parse_args(argv)
 
@@ -397,6 +421,7 @@ Examples:
             provider=provider,
             project_root=args.project,
             debug=args.debug,
+            use_streaming=args.streaming,
         )
         return code
     except Exception as e:

@@ -55,10 +55,10 @@ class MigrationAnalyzer(BaseTool):
             Migration analysis results
         """
         if not self.validate_input(input_params):
-            return "Error: Invalid input parameters"
+            return {"error": "Invalid input parameters"}
 
         if not self.project_root or not Path(self.project_root).exists():
-            return "Error: Project root not found"
+            return {"error": "Project root not found"}
 
         table_name = input_params.get("table_name")
         migration_type = input_params.get("migration_type", "all")
@@ -67,7 +67,7 @@ class MigrationAnalyzer(BaseTool):
         # Find migrations directory
         migrations_dir = Path(self.project_root) / "db" / "migrate"
         if not migrations_dir.exists():
-            return f"Error: Migrations directory not found: {migrations_dir}"
+            return {"error": f"Migrations directory not found: {migrations_dir}"}
 
         try:
             # Get migration files (sorted by timestamp, newest first)
@@ -94,7 +94,7 @@ class MigrationAnalyzer(BaseTool):
             return analysis
 
         except Exception as e:
-            return f"Error analyzing migrations: {e}"
+            return {"error": f"Error analyzing migrations: {e}"}
 
     def _analyze_migration_file(self, migration_file: Path, table_filter: Optional[str],
                                migration_type_filter: str) -> Optional[Dict[str, Any]]:

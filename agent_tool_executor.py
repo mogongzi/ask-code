@@ -26,9 +26,12 @@ class AgentToolExecutor:
                 "content": f"Tool '{tool_name}' is not available."
             }
 
-        # Execute tool synchronously (no more async/await)
+        # Execute tool with debug logging if debug is enabled
         try:
-            result = tool.execute(parameters or {})
+            if tool.debug_enabled:
+                result = tool.execute_with_debug(parameters or {})
+            else:
+                result = tool.execute(parameters or {})
         except Exception as e:  # pragma: no cover
             result = f"Error executing {tool_name}: {e}"
 

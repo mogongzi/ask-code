@@ -45,11 +45,6 @@ class AgentConfig:
 
     def _load_from_environment(self) -> None:
         """Load configuration from environment variables."""
-        # Debug settings
-        debug_env = os.getenv('AGENT_TOOL_DEBUG', '').lower()
-        if debug_env in ('1', 'true', 'yes'):
-            self.debug_enabled = True
-
         # Logging level
         log_level = os.getenv('AGENT_LOG_LEVEL', '').upper()
         if log_level in ('DEBUG', 'INFO', 'WARNING', 'ERROR'):

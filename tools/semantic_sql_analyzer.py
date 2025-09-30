@@ -129,8 +129,11 @@ class SemanticSQLAnalyzer:
     def analyze(self, sql: str) -> QueryAnalysis:
         """Perform complete semantic analysis of SQL query."""
         try:
-            # Parse SQL into AST
-            parsed = self.parser.parse(sql, dialect="postgres")[0]
+            # Parse SQL into AST - try MySQL first (backticks), then PostgreSQL
+            try:
+                parsed = self.parser.parse(sql, dialect="mysql")[0]
+            except:
+                parsed = self.parser.parse(sql, dialect="postgres")[0]
 
             # Build semantic analysis
             analysis = QueryAnalysis(raw_sql=sql, intent=QueryIntent.DATA_RETRIEVAL)
@@ -436,6 +439,30 @@ def create_fingerprint(analysis: QueryAnalysis) -> str:
         table = analysis.primary_table.name if analysis.primary_table else "table"
         base = f"SELECT COUNT(*) FROM {table}"
 
+        if analysis.where_conditions:
+            where_parts = []
+            for condition in analysis.where_conditions:
+                where_parts.append(f"{condition.column.name} {condition.operator} ?")
+            base += f" WHERE {' AND '.join(where_parts)}"
+        return base
+
+    elif analysis.intent == QueryIntent.DATA_INSERTION:
+        table = analysis.primary_table.name if analysis.primary_table else "table"
+        return f"INSERT INTO {table} (...)"
+
+    elif analysis.intent == QueryIntent.DATA_UPDATE:
+        table = analysis.primary_table.name if analysis.primary_table else "table"
+        base = f"UPDATE {table} SET ..."
+        if analysis.where_conditions:
+            where_parts = []
+            for condition in analysis.where_conditions:
+                where_parts.append(f"{condition.column.name} {condition.operator} ?")
+            base += f" WHERE {' AND '.join(where_parts)}"
+        return base
+
+    elif analysis.intent == QueryIntent.DATA_DELETION:
+        table = analysis.primary_table.name if analysis.primary_table else "table"
+        base = f"DELETE FROM {table}"
         if analysis.where_conditions:
             where_parts = []
             for condition in analysis.where_conditions:

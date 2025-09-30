@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Running the Application:**
 
-- Main Rails analysis CLI: `python3 ask_code.py --project /path/to/rails/project`
+- Main Rails analysis CLI: `python3 ride_rails.py --project /path/to/rails/project`
 - Default endpoint: `http://127.0.0.1:8000/invoke`
 - Provider options: `--provider bedrock` or `--provider azure`
 
@@ -38,7 +38,7 @@ This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent a
 
 **Core Components:**
 
-- **`ask_code.py`**: Main CLI entry point for Rails code analysis with ReAct agent
+- **`ride_rails.py`**: Main CLI entry point for Rails code analysis with ReAct agent
 - **`react_rails_agent.py`**: ReAct pattern implementation for intelligent Rails codebase analysis
 - **`streaming_client.py`**: SSE client for handling LLM streaming responses with tool execution
 - **`agent_tool_executor.py`**: Bridges between LLM function calls and agent tools
@@ -88,4 +88,8 @@ The agent now automatically detects SQL transaction logs (multiple queries with 
 
 ## Debug Mode
 
-Set `AGENT_TOOL_DEBUG=1` environment variable to enable detailed tool execution logging.
+Use the `--debug` flag to enable detailed tool execution logging and error traces:
+
+```bash
+python3 ride_rails.py --project /path/to/rails/project --debug
+```

@@ -75,8 +75,13 @@ class ReActState:
 
     # Control flags
     finalize_requested: bool = False
+    finalize_requested_at_step: Optional[int] = None
     should_stop: bool = False
     stop_reason: Optional[str] = None
+
+    # Stuck detection
+    consecutive_no_tool_calls: int = 0
+    last_step_had_tool_calls: bool = False
 
     def add_step(self, step: ReActStep) -> None:
         """Add a new step to the state."""
@@ -188,13 +193,40 @@ class ReActState:
     def request_finalization(self) -> None:
         """Request finalization of the ReAct loop."""
         self.finalize_requested = True
-        logger.debug("Finalization requested")
+        self.finalize_requested_at_step = self.current_step
+        logger.debug(f"Finalization requested at step {self.current_step}")
 
     def stop_with_reason(self, reason: str) -> None:
         """Stop the ReAct loop with a specific reason."""
         self.should_stop = True
         self.stop_reason = reason
         logger.info(f"ReAct loop stopped: {reason}")
+
+    def is_stuck_after_finalization(self, max_steps_after_finalization: int = 2) -> bool:
+        """Check if agent is stuck after finalization was requested."""
+        if not self.finalize_requested or self.finalize_requested_at_step is None:
+            return False
+
+        steps_since_finalization = self.current_step - self.finalize_requested_at_step
+        return steps_since_finalization >= max_steps_after_finalization
+
+    def record_tool_call_status(self, has_tool_calls: bool) -> None:
+        """Track whether the current step had tool calls for stuck detection."""
+        if has_tool_calls:
+            self.consecutive_no_tool_calls = 0
+            self.last_step_had_tool_calls = True
+        else:
+            if not self.last_step_had_tool_calls:
+                self.consecutive_no_tool_calls += 1
+            else:
+                self.consecutive_no_tool_calls = 1
+            self.last_step_had_tool_calls = False
+
+        logger.debug(f"Tool call tracking: has_calls={has_tool_calls}, consecutive_no_calls={self.consecutive_no_tool_calls}")
+
+    def is_stuck_without_tools(self, max_consecutive_no_tools: int = 2) -> bool:
+        """Check if agent is stuck (responding without tool calls repeatedly)."""
+        return self.consecutive_no_tool_calls >= max_consecutive_no_tools
 
     def get_summary(self, limit: int = 12) -> str:
         """
@@ -244,8 +276,10 @@ class ReActState:
             'search_attempts': self.search_attempts,
             'findings': self.findings,
             'finalize_requested': self.finalize_requested,
+            'finalize_requested_at_step': self.finalize_requested_at_step,
             'should_stop': self.should_stop,
             'stop_reason': self.stop_reason,
+            'consecutive_no_tool_calls': self.consecutive_no_tool_calls,
         }
 
 

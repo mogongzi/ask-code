@@ -67,6 +67,13 @@ class RipgrepTool(BaseTool):
         """
         self._debug_input(input_params)
 
+        # Check for specific validation errors to provide better messages
+        pattern = input_params.get("pattern", "")
+        if not pattern:
+            error_result = {"error": "Pattern is required"}
+            self._debug_output(error_result)
+            return error_result
+
         if not self.validate_input(input_params):
             error_result = {"error": "Invalid input parameters"}
             self._debug_output(error_result)
@@ -77,7 +84,6 @@ class RipgrepTool(BaseTool):
             self._debug_output(error_result)
             return error_result
 
-        pattern = input_params.get("pattern", "")
         file_types = input_params.get("file_types", ["rb"])
         context = input_params.get("context", 2)
         max_results = input_params.get("max_results", 20)
@@ -90,11 +96,6 @@ class RipgrepTool(BaseTool):
             "max_results": max_results,
             "case_insensitive": case_insensitive
         })
-
-        if not pattern:
-            error_result = {"error": "Pattern is required"}
-            self._debug_output(error_result)
-            return error_result
 
         try:
             # Build ripgrep command
