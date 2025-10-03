@@ -6,7 +6,82 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **`util/` folder**: Contains utility functions and helper modules used internally by the project
 - **`tools/` folder**: Contains tool definitions and implementations that can be invoked by LLMs via function calling and agent flow
+- **`journal/` folder**: Contains development documentation, implementation notes, and technical journals
+- **`tests/` folder**: Contains all test files (unit tests, integration tests, test utilities)
 - Execute `source .venv/bin/activate` before running `python3`, `python` or `pytest` commands
+
+## Documentation Policy
+
+**IMPORTANT**: All markdown documentation created by coding agents (Claude, Codex, or others) MUST be placed in the `journal/` folder.
+
+**Keep in root directory only:**
+- `README.md` - Project overview and quick start
+- `CLAUDE.md` - This file (instructions for Claude Code)
+- `AGENTS.md` - Agent architecture overview
+
+**Place in journal/ folder:**
+- Implementation notes and detailed technical documentation
+- Bug fix summaries and troubleshooting guides
+- Feature development journals and progress logs
+- API documentation and architectural deep-dives
+- Testing documentation and debugging guides
+- Any other development-related markdown files
+
+**Naming Convention:**
+- Use timestamp prefix: `YYYY-MM-DD_TOPIC.md`
+- Today's date: Use the actual date from the system
+- Example: `2025-09-30_NEW_FEATURE.md`
+
+**Examples:**
+```bash
+# ✅ Correct placement and naming
+journal/2025-09-30_FIXES_SUMMARY.md
+journal/2025-09-30_NON_STREAMING_API.md
+journal/2025-09-30_SPINNER_ANIMATION.md
+journal/2025-09-30_AGENT_FLOW_DETAILED.md
+
+# ❌ Wrong placement (do not create these in root)
+FEATURE_NOTES.md
+BUG_FIXES.md
+IMPLEMENTATION_DETAILS.md
+
+# ❌ Wrong naming (missing timestamp)
+journal/FEATURE_NOTES.md
+journal/BUG_FIXES.md
+```
+
+## Test File Policy
+
+**IMPORTANT**: All test files MUST be placed in the `tests/` directory.
+
+**Naming Convention:**
+- All test files must start with `test_` prefix
+- Format: `test_<module_name>.py` or `test_<feature>.py`
+- Example: `test_spinner_animation.py`, `test_non_streaming.py`
+
+**Examples:**
+```bash
+# ✅ Correct placement
+tests/test_spinner_animation.py
+tests/test_non_streaming.py
+tests/test_agent_config.py
+tests/test_base_tool.py
+
+# ❌ Wrong placement (do not create test files in root)
+test_my_feature.py
+test_new_functionality.py
+
+# ❌ Wrong naming (must start with test_)
+tests/my_feature_test.py
+tests/feature_tests.py
+```
+
+**Test Organization:**
+- Unit tests: `tests/test_<module_name>.py`
+- Integration tests: `tests/test_<feature_name>.py`
+- Test fixtures: `tests/conftest.py`
+- Test utilities: `tests/run_tests.py`
+```
 
 ## Development Commands
 
@@ -18,8 +93,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **Running the Application:**
 
 - Main Rails analysis CLI: `python3 ride_rails.py --project /path/to/rails/project`
-- Default endpoint: `http://127.0.0.1:8000/invoke`
+- Default endpoint: `http://127.0.0.1:8000/invoke` (blocking mode)
 - Provider options: `--provider bedrock` or `--provider azure`
+- Client modes: `--streaming` for SSE streaming (default: blocking)
 
 **Installation:**
 
@@ -28,9 +104,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Testing:**
 
-- Tests should use pytest framework
-- No existing test files found in project structure
-- Create tests in a `tests/` directory if needed
+- All test files must be placed in the `tests/` directory
+- Test files should follow naming convention: `test_*.py`
+- Use pytest framework for all tests
+- Run tests: `pytest tests/` or `python tests/run_tests.py`
+- Test utilities: `tests/conftest.py` for fixtures and configuration
 
 ## Architecture Overview
 
@@ -41,6 +119,7 @@ This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent a
 - **`ride_rails.py`**: Main CLI entry point for Rails code analysis with ReAct agent
 - **`react_rails_agent.py`**: ReAct pattern implementation for intelligent Rails codebase analysis
 - **`streaming_client.py`**: SSE client for handling LLM streaming responses with tool execution
+- **`blocking_client.py`**: Blocking/synchronous client for single request/response with spinner animation
 - **`agent_tool_executor.py`**: Bridges between LLM function calls and agent tools
 
 **Tool System:**

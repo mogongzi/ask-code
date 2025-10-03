@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
 from rich.console import Console
+from rich.markdown import Markdown
 
 
 logger = logging.getLogger(__name__)
@@ -100,9 +101,9 @@ class LLMClient:
             provider_name=getattr(self.session, 'provider_name', 'bedrock'),
         )
 
-        # Display the response
+        # Display the response with Rich markdown formatting
         if result.text:
-            self.console.print(result.text.strip())
+            self.console.print(Markdown(result.text.strip()))
 
         # Track usage if available
         if hasattr(self.session, 'usage_tracker') and self.session.usage_tracker:
@@ -116,14 +117,14 @@ class LLMClient:
 
         if result.tool_calls:
             for tool_call in result.tool_calls:
-                tool_info = tool_call.get('tool_call', {})
-                tool_name = tool_info.get('name', 'unknown')
+                # tool_call is a ToolCall object, not a dict
+                tool_name = tool_call.name
                 tools_used.append(tool_name)
 
                 self.console.print(f"[yellow]⚙ Using {tool_name} tool...[/yellow]")
 
-                if tool_call.get('result'):
-                    result_text = tool_call.get('result', '')
+                if tool_call.result:
+                    result_text = tool_call.result
                     if isinstance(result_text, str) and result_text:
                         self.console.print(f"[green]✓ {result_text}[/green]")
                         tool_results[tool_name] = result_text
@@ -221,7 +222,7 @@ Input: {"pattern": "SELECT|WHERE|FROM", "file_types": ["rb", "erb"]}
         Format tool calls and results into Anthropic tool_use/tool_result messages.
 
         Args:
-            tool_calls_made: List of tool call dictionaries
+            tool_calls_made: List of ToolCall objects
 
         Returns:
             List of formatted messages for conversation context
@@ -231,24 +232,23 @@ Input: {"pattern": "SELECT|WHERE|FROM", "file_types": ["rb", "erb"]}
 
         # Create tool_use blocks
         tool_use_blocks = []
-        for tool_data in tool_calls_made:
-            tc = tool_data.get("tool_call", {})
+        for tool_call in tool_calls_made:
+            # tool_call is a ToolCall object
             tool_use_blocks.append({
                 "type": "tool_use",
-                "id": tc.get("id"),
-                "name": tc.get("name"),
-                "input": tc.get("input", {}),
+                "id": tool_call.id,
+                "name": tool_call.name,
+                "input": tool_call.input,
             })
 
         # Create tool_result blocks
         tool_result_blocks = []
-        for tool_data in tool_calls_made:
-            tc = tool_data.get("tool_call", {})
-            result = tool_data.get("result", "")
+        for tool_call in tool_calls_made:
+            # tool_call is a ToolCall object
             tool_result_blocks.append({
                 "type": "tool_result",
-                "tool_use_id": tc.get("id"),
-                "content": result,
+                "tool_use_id": tool_call.id,
+                "content": tool_call.result,
             })
 
         return [

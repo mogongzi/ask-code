@@ -83,7 +83,9 @@ def test_transaction_search():
     print("\n🎯 Expected Result: lib/page_view_helper.rb:4")
     print("   (The transaction block wrapping the page_view INSERT)")
 
-    return result
+    # Verify we got results
+    assert result is not None
+    assert "transaction_summary" in result
 
 if __name__ == "__main__":
     test_transaction_search()

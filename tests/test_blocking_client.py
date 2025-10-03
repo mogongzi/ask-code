@@ -1,13 +1,20 @@
 #!/usr/bin/env python3
 """
-Test script for non-streaming client functionality.
+Test script for blocking client functionality.
 
-This script tests the NonStreamingClient with a mock response
+This script tests the BlockingClient with mock responses
 to verify it correctly handles tool execution and response parsing.
 """
 
+import sys
+import os
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 import json
-from non_streaming_client import NonStreamingClient
+from unittest.mock import Mock, patch
+from llm.clients import BlockingClient
+from llm.types import Provider, LLMResponse
 from tools.executor import ToolExecutor
 
 
@@ -33,7 +40,7 @@ def test_bedrock_format():
 
     # Create client with mock executor
     executor = MockToolExecutor()
-    client = NonStreamingClient(tool_executor=executor)
+    client = BlockingClient(tool_executor=executor, provider=Provider.BEDROCK)
 
     # Mock Bedrock response (actual format from /invoke endpoint)
     mock_response = {
@@ -60,24 +67,30 @@ def test_bedrock_format():
         }
     }
 
-    # Extract components
-    text = client._extract_text(mock_response, "bedrock")
-    print(f"✓ Extracted text: {text}")
-    assert text == "I will use the test tool to analyze this query."
+    # Mock the requests.post call to return our mock response
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.json.return_value = mock_response
+        mock_post.return_value.raise_for_status = Mock()
 
-    model = client._extract_model_name(mock_response, "bedrock")
-    print(f"✓ Extracted model: {model}")
-    assert model == "claude-3-sonnet"
+        # Send message
+        result = client.send_message("http://test.com/invoke", {"messages": []})
 
-    tool_calls = client._extract_tool_calls(mock_response, "bedrock")
-    print(f"✓ Extracted {len(tool_calls)} tool calls")
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "test_tool"
-    assert tool_calls[0]["id"] == "tool_123"
+        # Verify result
+        assert isinstance(result, LLMResponse)
+        print(f"✓ Extracted text: {result.text}")
+        assert result.text == "I will use the test tool to analyze this query."
 
-    tokens, cost = client._extract_usage(mock_response, "bedrock")
-    print(f"✓ Extracted usage: {tokens} tokens, ${cost:.4f}")
-    assert tokens == 150
+        print(f"✓ Extracted model: {result.model_name}")
+        assert result.model_name == "claude-3-sonnet"
+
+        print(f"✓ Extracted {len(result.tool_calls)} tool calls")
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "test_tool"
+        assert result.tool_calls[0].id == "tool_123"
+        assert result.tool_calls[0].result  # Tool was executed
+
+        print(f"✓ Extracted usage: {result.tokens} tokens, ${result.cost:.4f}")
+        assert result.tokens == 150
 
     print("\n✅ Bedrock format parsing successful!\n")
 
@@ -88,7 +101,7 @@ def test_azure_format():
 
     # Create client with mock executor
     executor = MockToolExecutor()
-    client = NonStreamingClient(tool_executor=executor)
+    client = BlockingClient(tool_executor=executor, provider=Provider.AZURE)
 
     # Mock Azure/OpenAI response
     mock_response = {
@@ -120,25 +133,30 @@ def test_azure_format():
         }
     }
 
-    # Extract components
-    text = client._extract_text(mock_response, "azure")
-    print(f"✓ Extracted text: {text}")
-    assert text == "I will search for the relevant code."
+    # Mock the requests.post call to return our mock response
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.json.return_value = mock_response
+        mock_post.return_value.raise_for_status = Mock()
 
-    model = client._extract_model_name(mock_response, "azure")
-    print(f"✓ Extracted model: {model}")
-    assert model == "gpt-4"
+        # Send message
+        result = client.send_message("http://test.com/invoke", {"messages": []})
 
-    tool_calls = client._extract_tool_calls(mock_response, "azure")
-    print(f"✓ Extracted {len(tool_calls)} tool calls")
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "test_tool"
-    assert tool_calls[0]["id"] == "call_456"
-    assert tool_calls[0]["input"]["pattern"] == "User.find"
+        # Verify result
+        assert isinstance(result, LLMResponse)
+        print(f"✓ Extracted text: {result.text}")
+        assert result.text == "I will search for the relevant code."
 
-    tokens, cost = client._extract_usage(mock_response, "azure")
-    print(f"✓ Extracted usage: {tokens} tokens, ${cost:.4f}")
-    assert tokens == 120
+        print(f"✓ Extracted model: {result.model_name}")
+        assert result.model_name == "gpt-4"
+
+        print(f"✓ Extracted {len(result.tool_calls)} tool calls")
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "test_tool"
+        assert result.tool_calls[0].id == "call_456"
+        assert result.tool_calls[0].input["pattern"] == "User.find"
+
+        print(f"✓ Extracted usage: {result.tokens} tokens, ${result.cost:.4f}")
+        assert result.tokens == 120
 
     print("\n✅ Azure/OpenAI format parsing successful!\n")
 
@@ -149,7 +167,7 @@ def test_tool_execution():
 
     # Create client with mock executor
     executor = MockToolExecutor()
-    client = NonStreamingClient(tool_executor=executor)
+    client = BlockingClient(tool_executor=executor, provider=Provider.BEDROCK)
 
     # Mock response with tool calls (actual Bedrock format)
     mock_response = {
@@ -172,21 +190,27 @@ def test_tool_execution():
         }
     }
 
-    # Execute tool calls
-    tool_results = client._execute_tool_calls(mock_response, "bedrock")
+    # Mock the requests.post call to return our mock response
+    with patch('requests.post') as mock_post:
+        mock_post.return_value.json.return_value = mock_response
+        mock_post.return_value.raise_for_status = Mock()
 
-    print(f"✓ Executed {len(tool_results)} tool calls")
-    assert len(tool_results) == 1
+        # Send message
+        result = client.send_message("http://test.com/invoke", {"messages": []})
 
-    result = tool_results[0]
-    print(f"✓ Tool call ID: {result['tool_call']['id']}")
-    assert result['tool_call']['id'] == "tool_789"
+        # Verify result
+        print(f"✓ Executed {len(result.tool_calls)} tool calls")
+        assert len(result.tool_calls) == 1
 
-    print(f"✓ Tool name: {result['tool_call']['name']}")
-    assert result['tool_call']['name'] == "test_tool"
+        tool_call = result.tool_calls[0]
+        print(f"✓ Tool call ID: {tool_call.id}")
+        assert tool_call.id == "tool_789"
 
-    print(f"✓ Tool result: {result['result']}")
-    assert "Executed test_tool" in result['result']
+        print(f"✓ Tool name: {tool_call.name}")
+        assert tool_call.name == "test_tool"
+
+        print(f"✓ Tool result: {tool_call.result}")
+        assert "Executed test_tool" in tool_call.result
 
     print("\n✅ Tool execution successful!\n")
 
@@ -194,7 +218,7 @@ def test_tool_execution():
 def main():
     """Run all tests."""
     print("\n" + "="*60)
-    print("  Non-Streaming Client Test Suite")
+    print("  Blocking Client Test Suite")
     print("="*60)
 
     try:

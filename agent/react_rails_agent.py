@@ -212,17 +212,17 @@ class ReactRailsAgent:
 
             # Process each tool call
             for tool_call in llm_response.tool_calls:
-                tool_info = tool_call.get('tool_call', {})
-                tool_name = tool_info.get('name', 'unknown')
-                tool_input = tool_info.get('input', {})
+                # tool_call is a ToolCall object, not a dict
+                tool_name = tool_call.name
+                tool_input = tool_call.input
 
                 # Record action
                 self.state_machine.record_action(tool_name, tool_input)
                 self.logger.log_react_step("action", step_num, f"Used {tool_name}", tool_name)
 
                 # Record observation
-                if tool_call.get('result'):
-                    result_text = tool_call.get('result', '')
+                if tool_call.result:
+                    result_text = tool_call.result
                     self.state_machine.record_observation(result_text, result_text)
                     self.logger.log_react_step("observation", step_num, result_text)
 

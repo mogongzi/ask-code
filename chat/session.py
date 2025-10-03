@@ -3,7 +3,8 @@
 from typing import List
 from rich.console import Console
 
-from streaming_client import StreamingClient, StreamResult
+from llm.clients import StreamingClient
+from llm.types import LLMResponse
 
 console = Console(soft_wrap=True)
 
@@ -22,7 +23,7 @@ class ChatSession:
         self.streaming_client = StreamingClient(tool_executor=tool_executor)
 
     def send_message(self, history: List[dict], use_thinking: bool, tools_enabled: bool,
-                    available_tools) -> StreamResult:
+                    available_tools) -> LLMResponse:
         """Send a message and handle the complete request/response cycle including tools."""
         # Build request payload with conditional tool support and context injection
         tools_param = available_tools if tools_enabled else None
@@ -50,7 +51,7 @@ class ChatSession:
         return result
 
     def handle_tool_followup(self, history: List[dict], use_thinking: bool, tools_enabled: bool,
-                           available_tools) -> StreamResult:
+                           available_tools) -> LLMResponse:
         """Handle follow-up request after tool execution."""
 
         # Follow-up request includes tool results in context
