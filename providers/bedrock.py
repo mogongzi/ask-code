@@ -19,15 +19,18 @@ def build_payload(
     """
     processed_messages = messages
 
+    # Build payload with system prompt first (for better readability)
     payload = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
-        "messages": processed_messages,
     }
 
     # Anthropic-style API supports top-level 'system' for instructions
     if system_prompt:
         payload["system"] = system_prompt
+
+    # Messages come after system prompt
+    payload["messages"] = processed_messages
 
     if thinking:
         payload["thinking"] = {
