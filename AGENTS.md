@@ -4,13 +4,16 @@
 
 - **`util/` folder**: Contains utility functions and helper modules used internally by the project
 - **`tools/` folder**: Contains tool definitions and implementations that can be invoked by LLMs via function calling and agent flow
+- **`journal/` folder**: Contains development documentation, implementation notes, and technical journals
+- **`tests/` folder**: Contains all test files (unit tests, integration tests, test utilities)
 - Execute `source .venv/bin/activate` before running `python3`, `python` or `pytest` commands
 
 ## Project Structure & Module Organization
 
 - `ride_rails.py` is the primary CLI for Rails-focused analysis, wiring provider selection, interactive input, and the ReAct agent loop.
 - `react_rails_agent.py` contains the agent orchestration and tool wiring; `agent_tool_executor.py` mediates tool execution from agent calls.
-- `streaming_client.py` manages SSE/stream rendering; conversational state and token tracking live in `chat/`.
+- `streaming_client.py` manages SSE/stream rendering; `blocking_client.py` handles synchronous single-request responses with spinner animation.
+- Conversational state and token tracking live in `chat/`.
 - Context handling utilities live in `context/`; provider adapters are under `providers/`; prompt scaffolds sit in `prompts/`.
 - Rendering primitives reside in `render/`, while reusable helpers and interactive shells are collected in `util/`.
 - Built-in analysis tools (ripgrep, SQL analyzers, Rails inspectors) live in `tools/`; extend via subclasses of `tools.base_tool.BaseTool`.
@@ -31,9 +34,32 @@
 
 ## Testing Guidelines
 
-- Prefer `pytest` with lightweight fixtures that stub provider responses and `StreamingClient` callbacks.
-- Place new tests beside the code under test or in `tests/` using the `test_*.py` pattern; cover both success and failure paths for tool contracts.
-- Capture manual verification transcripts in `logs/` or dedicated markdown notes when behavior is hard to mock.
+**Test File Organization:**
+- **IMPORTANT**: All test files MUST be placed in the `tests/` directory
+- Test files must follow naming convention: `test_*.py`
+- Never create test files in the root directory
+
+**Test Framework:**
+- Prefer `pytest` with lightweight fixtures that stub provider responses and `StreamingClient` callbacks
+- Use `tests/conftest.py` for shared fixtures and configuration
+- Run tests: `pytest tests/` or `python tests/run_tests.py`
+
+**Test Coverage:**
+- Cover both success and failure paths for tool contracts
+- Unit tests: `tests/test_<module_name>.py`
+- Integration tests: `tests/test_<feature_name>.py`
+- Capture manual verification transcripts in `journal/` when behavior is hard to mock
+
+**Examples:**
+```bash
+# ✅ Correct
+tests/test_spinner_animation.py
+tests/test_non_streaming.py
+tests/test_agent_config.py
+
+# ❌ Wrong (never in root)
+test_my_feature.py
+```
 
 ## Commit & Pull Request Guidelines
 

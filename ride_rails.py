@@ -17,8 +17,7 @@ from providers import get_provider
 from util.command_helpers import handle_special_commands
 from util.input_helpers import should_exit_from_input
 from chat.session import ChatSession
-from streaming_client import StreamingClient
-from non_streaming_client import NonStreamingClient
+from llm.clients import StreamingClient, BlockingClient
 
 # Import agent components
 from agent.react_rails_agent import ReactRailsAgent
@@ -34,19 +33,20 @@ console = Console()
 _ABORT = False
 
 
-def create_streaming_client(use_streaming: bool = False):
-    """Create and return streaming or non-streaming client.
+def create_streaming_client(use_streaming: bool = False, console: Optional[Console] = None):
+    """Create and return streaming or blocking client.
 
     Args:
-        use_streaming: If True, use StreamingClient (SSE). If False, use NonStreamingClient (single request).
+        use_streaming: If True, use StreamingClient (SSE). If False, use BlockingClient (single request).
+        console: Rich console for output (used by BlockingClient for spinner)
 
     Returns:
-        StreamingClient or NonStreamingClient instance
+        StreamingClient or BlockingClient instance
     """
     if use_streaming:
         return StreamingClient()
     else:
-        return NonStreamingClient()
+        return BlockingClient(console=console)
 
 
 def get_agent_input(console, prompt_style, display_string, thinking_mode, user_history, tools_enabled):
@@ -152,9 +152,9 @@ def repl(
     # Extract provider name
     provider_name = provider.__name__.split('.')[-1] if hasattr(provider, '__name__') else "bedrock"
 
-    # Create client (streaming or non-streaming)
-    client = create_streaming_client(use_streaming=use_streaming)
-    client_type = "streaming (SSE)" if use_streaming else "non-streaming (single request)"
+    # Create client (streaming or blocking)
+    client = create_streaming_client(use_streaming=use_streaming, console=console)
+    client_type = "streaming (SSE)" if use_streaming else "blocking (single request)"
     console.print(f"[dim]Using {client_type} client[/dim]")
 
     # Create session
@@ -215,7 +215,7 @@ def repl(
         if use_streaming:
             session.streaming_client = StreamingClient(tool_executor=agent_executor)
         else:
-            session.streaming_client = NonStreamingClient(tool_executor=agent_executor)
+            session.streaming_client = BlockingClient(tool_executor=agent_executor, console=console)
         console.print(f"[dim]Tool executor configured with {len(available_tools)} tools[/dim]")
 
         if debug:
@@ -385,7 +385,7 @@ Examples:
     parser.add_argument(
         "--streaming",
         action="store_true",
-        help="Use streaming API (SSE) instead of non-streaming (default: non-streaming)"
+        help="Use streaming API (SSE) instead of blocking (default: blocking)"
     )
     args = parser.parse_args(argv)
 

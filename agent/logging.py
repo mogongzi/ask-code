@@ -15,6 +15,37 @@ from dataclasses import dataclass
 
 from rich.console import Console
 from rich.logging import RichHandler
+from rich.text import Text
+
+
+class NetworkErrorHighlightingHandler(RichHandler):
+    """Custom RichHandler that highlights network errors."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Emit a log record with network error highlighting."""
+        message = self.format(record)
+
+        # Check if this is a network error
+        is_network_error = (
+            "Network error" in message or
+            "502" in message or
+            "Bad Gateway" in message
+        )
+
+        if is_network_error and record.levelno >= logging.ERROR:
+            # Bypass the standard RichHandler and print directly to console
+            try:
+                console = self.console
+                console.print()
+                console.print(f"[bold red on yellow]⚠ {message}[/bold red on yellow]")
+                console.print("[yellow]Tip: Check if the API server is running[/yellow]")
+                console.print()
+            except Exception:
+                # Fallback to standard handling if something goes wrong
+                super().emit(record)
+        else:
+            # Use standard RichHandler for non-network errors
+            super().emit(record)
 
 
 @dataclass
@@ -47,11 +78,14 @@ class StructuredLogger:
         self.logger = logging.getLogger(name)
         self.logger.setLevel(getattr(logging, level.upper()))
 
+        # Disable propagation to avoid duplicate logs when root logger also has handlers
+        self.logger.propagate = False
+
         # Clear existing handlers
         self.logger.handlers.clear()
 
-        # Add Rich handler for console output
-        rich_handler = RichHandler(
+        # Add custom Rich handler for console output with network error highlighting
+        rich_handler = NetworkErrorHighlightingHandler(
             console=self.console,
             show_time=True,
             show_path=False,
@@ -122,7 +156,17 @@ class StructuredLogger:
               exc_info: bool = False) -> None:
         """Log error message."""
         formatted = self._format_message(message, extra)
-        self.logger.error(formatted, exc_info=exc_info)
+
+        # Highlight network errors prominently
+        if "Network error" in formatted or "502" in formatted or "Bad Gateway" in formatted:
+            # Print to console directly with highlighting
+            self.console.print()
+            self.console.print(f"[bold red on yellow]⚠ {formatted}[/bold red on yellow]")
+            self.console.print("[yellow]Tip: Check if the API server is running[/yellow]")
+            self.console.print()
+        else:
+            # Use standard logger for other errors
+            self.logger.error(formatted, exc_info=exc_info)
 
     def critical(self, message: str, extra: Optional[Dict[str, Any]] = None,
                 exc_info: bool = False) -> None:
@@ -299,7 +343,7 @@ class AgentLogger:
     @classmethod
     def configure(cls, level: str = "INFO", console: Optional[Console] = None) -> None:
         """
-        Configure the global agent logger.
+        Configure the global agent logger and root logger.
 
         Args:
             level: Logging level
@@ -309,6 +353,28 @@ class AgentLogger:
             cls._instance.logger.setLevel(getattr(logging, level.upper()))
         else:
             cls._instance = StructuredLogger("rails_agent", level, console)
+
+        # Also configure root logger to use the custom handler for all modules
+        # This ensures error_handling.py and other modules also get highlighting
+        _console = console or Console()
+        root_logger = logging.getLogger()
+        root_logger.setLevel(getattr(logging, level.upper()))
+
+        # Remove existing handlers
+        root_logger.handlers.clear()
+
+        # Add custom network error highlighting handler
+        handler = NetworkErrorHighlightingHandler(
+            console=_console,
+            show_time=True,
+            show_path=False,
+            rich_tracebacks=True
+        )
+        handler.setFormatter(logging.Formatter(
+            fmt="%(message)s",
+            datefmt="[%X]"
+        ))
+        root_logger.addHandler(handler)
 
     @classmethod
     def set_context(cls, **kwargs) -> None:
