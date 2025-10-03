@@ -69,18 +69,36 @@ class SpinnerManager:
             self.console.print(f"[dim]{message}[/dim]")
 
     def stop(self) -> None:
-        """Stop animated spinner."""
-        if not self._is_active:
-            return
-
+        """Stop animated spinner and clear the line."""
+        # Always try to stop, regardless of _is_active state
+        # This handles edge cases where state tracking gets out of sync
         if self._spinner_live:
             try:
+                # Stop the Live context
                 self._spinner_live.stop()
             except Exception as e:
                 logger.debug(f"Error stopping spinner: {e}")
             finally:
                 self._spinner_live = None
 
+        # Clear the spinner line to ensure it's fully removed
+        # This must happen AFTER stopping Live to properly clear the output
+        try:
+            # Use Rich's file attribute which handles the proper stream
+            # Rich.Live uses console.file (usually stderr by default)
+            if hasattr(self.console, 'file'):
+                stream = self.console.file
+            else:
+                import sys
+                stream = sys.stderr
+
+            # Write ANSI clear code directly to the stream
+            stream.write('\r\033[K')
+            stream.flush()
+        except Exception as e:
+            logger.debug(f"Error clearing spinner line: {e}")
+
+        # Reset state
         self._is_active = False
 
     def update_message(self, message: str) -> None:

@@ -4,6 +4,7 @@ ReAct state machine for managing reasoning and acting loop state.
 This module provides centralized state management for the ReAct pattern,
 tracking steps, tool usage, and decision making.
 """
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 class StepType(Enum):
     """Types of ReAct steps."""
+
     THOUGHT = "thought"
     ACTION = "action"
     OBSERVATION = "observation"
@@ -26,6 +28,7 @@ class StepType(Enum):
 @dataclass
 class ReActStep:
     """Represents a single step in the ReAct loop."""
+
     step_type: StepType
     content: str
     tool_name: Optional[str] = None
@@ -37,19 +40,20 @@ class ReActStep:
     def to_dict(self) -> Dict[str, Any]:
         """Convert step to dictionary representation."""
         return {
-            'step_type': self.step_type.value,
-            'content': self.content,
-            'tool_name': self.tool_name,
-            'tool_input': self.tool_input,
-            'tool_output': str(self.tool_output) if self.tool_output else None,
-            'step_number': self.step_number,
-            'timestamp': self.timestamp,
+            "step_type": self.step_type.value,
+            "content": self.content,
+            "tool_name": self.tool_name,
+            "tool_input": self.tool_input,
+            "tool_output": str(self.tool_output) if self.tool_output else None,
+            "step_number": self.step_number,
+            "timestamp": self.timestamp,
         }
 
 
 @dataclass
 class ToolUsageStats:
     """Statistics for tool usage during ReAct session."""
+
     name: str
     usage_count: int = 0
     last_used_step: int = 0
@@ -60,6 +64,7 @@ class ToolUsageStats:
 @dataclass
 class ReActState:
     """State container for ReAct reasoning loop."""
+
     # Core tracking
     current_step: int = 0
     steps: List[ReActStep] = field(default_factory=list)
@@ -111,16 +116,21 @@ class ReActState:
         self.search_attempts.append(attempt)
         logger.debug(f"Recorded tool usage: {tool_name} (success: {success})")
 
-    def record_step_result(self, step_num: int, tool_name: str,
-                          response: str, tool_results: Dict[str, str],
-                          has_results: bool = False) -> None:
+    def record_step_result(
+        self,
+        step_num: int,
+        tool_name: str,
+        response: str,
+        tool_results: Dict[str, str],
+        has_results: bool = False,
+    ) -> None:
         """Record results from a step."""
         self.step_results[step_num] = {
-            'tool': tool_name,
-            'response': response,
-            'tool_results': tool_results,
-            'has_results': has_results,
-            'timestamp': self.current_step,
+            "tool": tool_name,
+            "response": response,
+            "tool_results": tool_results,
+            "has_results": has_results,
+            "timestamp": self.current_step,
         }
         logger.debug(f"Recorded results for step {step_num}")
 
@@ -142,7 +152,9 @@ class ReActState:
         # Only force different tool if:
         # 1. The same tool was used multiple times (not just once!)
         # 2. AND no high-quality results were found
-        if len(self.tools_used) == 1 and self.current_step > step_threshold + 1:  # Allow more attempts
+        if (
+            len(self.tools_used) == 1 and self.current_step > step_threshold + 1
+        ):  # Allow more attempts
             # Check if we actually found results - don't force if we have good results
             if not self.has_high_quality_results():
                 return True
@@ -158,15 +170,15 @@ class ReActState:
     def has_high_quality_results(self) -> bool:
         """Check if any step has produced high-quality results."""
         for step_info in self.step_results.values():
-            if step_info.get('has_results', False):
+            if step_info.get("has_results", False):
                 return True
 
             # Check for structured tool results
-            tool_name = step_info.get('tool')
-            tool_results = step_info.get('tool_results', {})
+            tool_name = step_info.get("tool")
+            tool_results = step_info.get("tool_results", {})
 
             if tool_name and tool_results:
-                raw_result = tool_results.get(tool_name, '')
+                raw_result = tool_results.get(tool_name, "")
                 if self._has_structured_matches(raw_result, tool_name):
                     return True
 
@@ -176,14 +188,15 @@ class ReActState:
         """Check if a tool result contains structured matches."""
         try:
             import json
+
             parsed = json.loads(result) if isinstance(result, str) else result
 
             if isinstance(parsed, dict):
-                if tool_name == 'enhanced_sql_rails_search':
-                    matches = parsed.get('matches', [])
+                if tool_name == "enhanced_sql_rails_search":
+                    matches = parsed.get("matches", [])
                     return isinstance(matches, list) and len(matches) > 0
-                elif tool_name == 'ripgrep':
-                    matches = parsed.get('matches', [])
+                elif tool_name == "ripgrep":
+                    matches = parsed.get("matches", [])
                     return isinstance(matches, list) and len(matches) > 0
         except (json.JSONDecodeError, TypeError):
             pass
@@ -202,7 +215,9 @@ class ReActState:
         self.stop_reason = reason
         logger.info(f"ReAct loop stopped: {reason}")
 
-    def is_stuck_after_finalization(self, max_steps_after_finalization: int = 2) -> bool:
+    def is_stuck_after_finalization(
+        self, max_steps_after_finalization: int = 2
+    ) -> bool:
         """Check if agent is stuck after finalization was requested."""
         if not self.finalize_requested or self.finalize_requested_at_step is None:
             return False
@@ -222,7 +237,9 @@ class ReActState:
                 self.consecutive_no_tool_calls = 1
             self.last_step_had_tool_calls = False
 
-        logger.debug(f"Tool call tracking: has_calls={has_tool_calls}, consecutive_no_calls={self.consecutive_no_tool_calls}")
+        logger.debug(
+            f"Tool call tracking: has_calls={has_tool_calls}, consecutive_no_calls={self.consecutive_no_tool_calls}"
+        )
 
     def is_stuck_without_tools(self, max_consecutive_no_tools: int = 2) -> bool:
         """Check if agent is stuck (responding without tool calls repeatedly)."""
@@ -250,10 +267,10 @@ class ReActState:
                 snippet = step.content.strip().splitlines()[0][:120]
                 parts.append(f"{i}. thought: {snippet}")
             elif step.step_type == StepType.ACTION:
-                tool_name = step.tool_name or 'tool'
+                tool_name = step.tool_name or "tool"
                 parts.append(f"{i}. action: {tool_name}")
             elif step.step_type == StepType.OBSERVATION:
-                snippet = (step.content or '').strip().splitlines()[0][:120]
+                snippet = (step.content or "").strip().splitlines()[0][:120]
                 parts.append(f"{i}. observation: {snippet}")
             elif step.step_type == StepType.ANSWER:
                 snippet = step.content.strip().splitlines()[0][:120]
@@ -264,22 +281,25 @@ class ReActState:
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary representation."""
         return {
-            'current_step': self.current_step,
-            'steps': [step.to_dict() for step in self.steps],
-            'tools_used': list(self.tools_used),
-            'tool_stats': {name: {
-                'usage_count': stats.usage_count,
-                'last_used_step': stats.last_used_step,
-                'success_count': stats.success_count,
-                'error_count': stats.error_count,
-            } for name, stats in self.tool_stats.items()},
-            'search_attempts': self.search_attempts,
-            'findings': self.findings,
-            'finalize_requested': self.finalize_requested,
-            'finalize_requested_at_step': self.finalize_requested_at_step,
-            'should_stop': self.should_stop,
-            'stop_reason': self.stop_reason,
-            'consecutive_no_tool_calls': self.consecutive_no_tool_calls,
+            "current_step": self.current_step,
+            "steps": [step.to_dict() for step in self.steps],
+            "tools_used": list(self.tools_used),
+            "tool_stats": {
+                name: {
+                    "usage_count": stats.usage_count,
+                    "last_used_step": stats.last_used_step,
+                    "success_count": stats.success_count,
+                    "error_count": stats.error_count,
+                }
+                for name, stats in self.tool_stats.items()
+            },
+            "search_attempts": self.search_attempts,
+            "findings": self.findings,
+            "finalize_requested": self.finalize_requested,
+            "finalize_requested_at_step": self.finalize_requested_at_step,
+            "should_stop": self.should_stop,
+            "stop_reason": self.stop_reason,
+            "consecutive_no_tool_calls": self.consecutive_no_tool_calls,
         }
 
 
@@ -312,10 +332,7 @@ class ReActStateMachine:
 
     def record_thought(self, content: str) -> None:
         """Record a thought step."""
-        step = ReActStep(
-            step_type=StepType.THOUGHT,
-            content=content.strip()
-        )
+        step = ReActStep(step_type=StepType.THOUGHT, content=content.strip())
         self.state.add_step(step)
 
     def record_action(self, tool_name: str, tool_input: Dict[str, Any]) -> None:
@@ -324,7 +341,7 @@ class ReActStateMachine:
             step_type=StepType.ACTION,
             content=f"Used {tool_name}",
             tool_name=tool_name,
-            tool_input=tool_input
+            tool_input=tool_input,
         )
         self.state.add_step(step)
         self.state.record_tool_usage(tool_name)
@@ -332,18 +349,13 @@ class ReActStateMachine:
     def record_observation(self, content: str, tool_output: Any = None) -> None:
         """Record an observation step."""
         step = ReActStep(
-            step_type=StepType.OBSERVATION,
-            content=content,
-            tool_output=tool_output
+            step_type=StepType.OBSERVATION, content=content, tool_output=tool_output
         )
         self.state.add_step(step)
 
     def record_answer(self, content: str) -> None:
         """Record a final answer step."""
-        step = ReActStep(
-            step_type=StepType.ANSWER,
-            content=content.strip()
-        )
+        step = ReActStep(step_type=StepType.ANSWER, content=content.strip())
         self.state.add_step(step)
         self.state.stop_with_reason("Final answer provided")
 
@@ -375,10 +387,5 @@ class ReActStateMachine:
         elif step == 4:
             prompt += "\n🎯 NEXT STRATEGY: Look for custom SQL files or complex query builders. "
             prompt += "Try ast_grep for method definitions containing 'SELECT' or search for .sql files."
-
-        unused_tools = self.state.get_unused_tools(available_tools)
-        prompt += f"\n🚫 DO NOT repeat tools: {', '.join(tools_used)}"
-        prompt += f"\n✅ Available unused tools: {', '.join(unused_tools)}"
-        prompt += "\n--- END CONTEXT ---\n"
 
         return prompt

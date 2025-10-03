@@ -80,7 +80,7 @@ class BlockingClient(BaseLLMClient):
         Raises:
             ReadTimeout, ConnectTimeout, RequestException: On errors
         """
-        # Start spinner
+        # Start spinner for user feedback
         self.spinner.start("Waiting for response…")
 
         try:

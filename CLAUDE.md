@@ -165,10 +165,12 @@ The agent now automatically detects SQL transaction logs (multiple queries with 
 - Multi-line input: Use Ctrl+J for new lines, Enter to submit
 - Escape or Ctrl+C to cancel during streaming
 
-## Debug Mode
+## Verbose Mode
 
-Use the `--debug` flag to enable detailed tool execution logging and error traces:
+Use the `--verbose` flag to enable detailed tool execution logging and error traces (INFO and DEBUG levels):
 
 ```bash
-python3 ride_rails.py --project /path/to/rails/project --debug
+python3 ride_rails.py --project /path/to/rails/project --verbose
 ```
+
+By default, only WARNING and ERROR level logs are shown.

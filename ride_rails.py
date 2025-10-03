@@ -116,7 +116,7 @@ def repl(
     *,
     provider,
     project_root: str,
-    debug: bool = False,
+    verbose: bool = False,
     use_streaming: bool = False,
 ) -> int:
     """
@@ -126,7 +126,7 @@ def repl(
         url: LLM endpoint URL
         provider: Provider adapter (bedrock/azure)
         project_root: Rails project root directory
-        debug: Enable debug mode
+        verbose: Enable verbose mode with detailed logging
         use_streaming: Use streaming API (SSE) vs non-streaming (single request)
 
     Returns:
@@ -134,9 +134,9 @@ def repl(
     """
     console.rule("🚀 Enhanced Rails Analysis Agent")
 
-    # Configure logging
+    # Configure logging - WARNING by default, INFO/DEBUG in verbose mode
     AgentLogger.configure(
-        level="DEBUG" if debug else "INFO",
+        level="DEBUG" if verbose else "WARNING",
         console=console
     )
 
@@ -177,8 +177,8 @@ def repl(
         config = AgentConfig(
             project_root=project_root,
             max_react_steps=15,  # Generous limit for thorough analysis
-            debug_enabled=debug,
-            log_level="DEBUG" if debug else "INFO",
+            debug_enabled=verbose,
+            log_level="DEBUG" if verbose else "WARNING",
             tool_repetition_limit=4,  # Allow some repetition but prevent loops
             finalization_threshold=3   # Request finalization after good results
         )
@@ -186,15 +186,15 @@ def repl(
         react_agent = ReactRailsAgent(config=config, session=session)
         console.print(f"[green]✓ Rails Agent initialized[/green]: {project_root}")
 
-        # Log initialization for debugging
-        if debug:
+        # Log initialization in verbose mode
+        if verbose:
             logger = AgentLogger.get_logger()
             logger.info(f"Created agent for ride_rails.py: {project_root}")
             status = react_agent.get_status()
             logger.debug(f"Agent status: {status}")
 
-        # Show configuration in debug mode
-        if debug:
+        # Show configuration in verbose mode
+        if verbose:
             status = react_agent.get_status()
             config = status['config']
             console.print(f"[dim]Config: {config['max_react_steps']} max steps, "
@@ -202,7 +202,7 @@ def repl(
                          f"tools={len(status['tool_registry']['tools_available'])}[/dim]")
     except Exception as e:
         console.print(f"[red]Error: Could not initialize ReAct agent: {e}[/red]")
-        if debug:
+        if verbose:
             import traceback
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         return 1
@@ -218,7 +218,7 @@ def repl(
             session.streaming_client = BlockingClient(tool_executor=agent_executor, console=console)
         console.print(f"[dim]Tool executor configured with {len(available_tools)} tools[/dim]")
 
-        if debug:
+        if verbose:
             tool_names = list(available_tools.keys())
             console.print(f"[dim]Available tools: {', '.join(tool_names)}[/dim]")
     except Exception as e:
@@ -287,7 +287,7 @@ def repl(
             console.print("\n[dim]Goodbye! 👋[/dim]")
             return 0
         except Exception as e:
-            if debug:
+            if verbose:
                 import traceback
                 console.print(f"[red]Unexpected error: {e}[/red]")
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
@@ -310,26 +310,26 @@ def repl(
             response = react_agent.process_message(user_input)
             console.print()  # Add spacing
 
-            # Show usage and session info
-            usage_display = usage.get_display_string()
-            session_info = f"Session: {len(user_history)} queries"
+            # Show usage and session info (only in verbose mode)
+            if verbose:
+                usage_display = usage.get_display_string()
+                session_info = f"Session: {len(user_history)} queries"
 
-            if usage_display:
-                console.print(f"[dim]Usage: {usage_display} • {session_info}[/dim]")
-            else:
-                console.print(f"[dim]{session_info}[/dim]")
+                if usage_display:
+                    console.print(f"[dim]Usage: {usage_display} • {session_info}[/dim]")
+                else:
+                    console.print(f"[dim]{session_info}[/dim]")
 
-            # Show analysis steps summary
-            try:
-                step_summary = react_agent.get_step_summary(limit=8)
-                if step_summary and step_summary.strip() != "No steps recorded.":
-                    console.print("[dim]Analysis Steps:[/dim]")
-                    for line in step_summary.split('\n'):
-                        if line.strip():
-                            console.print(f"[dim]  {line}[/dim]")
+                # Show analysis steps summary
+                try:
+                    step_summary = react_agent.get_step_summary(limit=8)
+                    if step_summary and step_summary.strip() != "No steps recorded.":
+                        console.print("[dim]Analysis Steps:[/dim]")
+                        for line in step_summary.split('\n'):
+                            if line.strip():
+                                console.print(f"[dim]  {line}[/dim]")
 
-                # Show detailed status in debug mode
-                if debug:
+                    # Show detailed status
                     status = react_agent.get_status()
                     state = status['state_machine']
                     tools_used = len(state['tools_used'])
@@ -337,13 +337,12 @@ def repl(
                         console.print(f"[dim]Debug: Tools used: {tools_used}, "
                                     f"Step: {state['current_step']}, "
                                     f"Should stop: {state.get('should_stop', False)}[/dim]")
-            except Exception as e:
-                if debug:
+                except Exception as e:
                     console.print(f"[dim]Debug - Step summary error: {e}[/dim]")
 
         except Exception as e:
             console.print(f"[red]Agent processing error: {e}[/red]")
-            if debug:
+            if verbose:
                 import traceback
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
@@ -357,8 +356,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         epilog="""
 Examples:
   %(prog)s --project /path/to/rails/app
-  %(prog)s --project /path/to/rails/app --debug
-  %(prog)s --project /path/to/rails/app --provider azure --debug
+  %(prog)s --project /path/to/rails/app --verbose
+  %(prog)s --project /path/to/rails/app --provider azure --verbose
         """
     )
     parser.add_argument(
@@ -378,9 +377,9 @@ Examples:
         help="Provider adapter to use (default: bedrock)"
     )
     parser.add_argument(
-        "--debug",
+        "--verbose",
         action="store_true",
-        help="Enable debug mode with detailed logging and error traces"
+        help="Enable verbose mode with detailed logging (INFO and DEBUG levels)"
     )
     parser.add_argument(
         "--streaming",
@@ -407,8 +406,8 @@ Examples:
         pass
 
     # Show startup information
-    if args.debug:
-        console.print(f"[dim]Debug mode enabled[/dim]")
+    if args.verbose:
+        console.print(f"[dim]Verbose mode enabled[/dim]")
         console.print(f"[dim]Project: {args.project}[/dim]")
         console.print(f"[dim]Provider: {args.provider}[/dim]")
         console.print(f"[dim]Endpoint: {args.url}[/dim]")
@@ -420,13 +419,13 @@ Examples:
             args.url,
             provider=provider,
             project_root=args.project,
-            debug=args.debug,
+            verbose=args.verbose,
             use_streaming=args.streaming,
         )
         return code
     except Exception as e:
         console.print(f"[red]Startup error: {e}[/red]")
-        if args.debug:
+        if args.verbose:
             import traceback
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         return 1
