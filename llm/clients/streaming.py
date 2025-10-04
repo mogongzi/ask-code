@@ -109,6 +109,22 @@ class StreamingClient(BaseLLMClient):
         current_tool = None
         tool_input_buffer = ""
 
+        def _safe_int(value: Optional[str]) -> int:
+            try:
+                if value is None:
+                    return 0
+                return int(float(value))
+            except (ValueError, TypeError):
+                return 0
+
+        def _safe_float(value: Optional[str]) -> float:
+            try:
+                if value in (None, ""):
+                    return 0.0
+                return float(value)
+            except (ValueError, TypeError):
+                return 0.0
+
         try:
             # Stream events and accumulate them
             for event in self._stream_events(url, payload, mapper, timeout):
@@ -153,14 +169,22 @@ class StreamingClient(BaseLLMClient):
                         parts = event.value.split("|")
                         if len(parts) >= 4:
                             total_str = parts[0].lstrip("~")
+                            input_str = parts[1].lstrip("~")
+                            output_str = parts[2].lstrip("~")
+                            cost_str = parts[3]
+
                             usage_info = {
-                                "total_tokens": int(total_str) if total_str.isdigit() else 0,
-                                "cost": float(parts[3]) if parts[3] else 0.0
+                                "total_tokens": _safe_int(total_str),
+                                "input_tokens": _safe_int(input_str),
+                                "output_tokens": _safe_int(output_str),
+                                "cost": _safe_float(cost_str),
                             }
                     else:
                         usage_info = {
-                            "total_tokens": int(event.value) if event.value and event.value.isdigit() else 0,
-                            "cost": 0.0
+                            "total_tokens": _safe_int(event.value),
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "cost": 0.0,
                         }
 
                 elif event.kind == "done":
@@ -168,14 +192,30 @@ class StreamingClient(BaseLLMClient):
 
             # Build complete response in format expected by parsers
             # This is a synthetic response structure that mimics Bedrock format
+            usage_block = {
+                "inputTokens": 0,
+                "outputTokens": 0,
+                "totalTokens": 0,
+                "cost": 0.0,
+            }
+
+            if usage_info:
+                usage_block.update(
+                    {
+                        "inputTokens": usage_info.get("input_tokens", 0),
+                        "outputTokens": usage_info.get("output_tokens", 0),
+                        "totalTokens": usage_info.get("total_tokens", 0),
+                        "cost": usage_info.get("cost", 0.0),
+                        "input_tokens": usage_info.get("input_tokens", 0),
+                        "output_tokens": usage_info.get("output_tokens", 0),
+                        "total_tokens": usage_info.get("total_tokens", 0),
+                    }
+                )
+
             complete_response = {
                 "content": [{"type": "text", "text": "".join(text_parts)}],
                 "stopReason": "end_turn" if not self._abort else "aborted",
-                "usage": {
-                    "inputTokens": 0,
-                    "outputTokens": usage_info.get("total_tokens", 0) if usage_info else 0,
-                    "totalTokens": usage_info.get("total_tokens", 0) if usage_info else 0
-                }
+                "usage": usage_block,
             }
 
             # Add model name if available

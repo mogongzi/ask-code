@@ -6,6 +6,9 @@ from typing import Dict, Iterator, Optional, Tuple, List
 
 Event = Tuple[str, Optional[str]]  # ("model"|"text"|"thinking"|"tool_start"|"tool_input_delta"|"tool_ready"|"done"|"tokens", value)
 
+# Bedrock Anthropic does not support prompt caching yet.
+supports_prompt_caching = False
+
 
 def build_payload(
     messages: List[dict], *, model: Optional[str] = None, max_tokens: int = 4096, temperature: Optional[float] = None, thinking: bool = False, thinking_tokens: int = 1024, tools: Optional[List[dict]] = None, system_prompt: Optional[str] = None, stop_sequences: Optional[List[str]] = None, **_: dict

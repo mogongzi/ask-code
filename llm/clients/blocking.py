@@ -42,7 +42,7 @@ class BlockingClient(BaseLLMClient):
         tool_executor: Optional[ToolExecutor] = None,
         console: Optional[Console] = None,
         provider: Provider = Provider.BEDROCK,
-        timeout: float = 120.0
+        timeout: float = 120.0,
     ):
         """Initialize blocking client.
 
@@ -58,11 +58,7 @@ class BlockingClient(BaseLLMClient):
         self.spinner = SpinnerManager(console=self.console)
 
     def _make_request(
-        self,
-        url: str,
-        payload: dict,
-        timeout: Optional[float] = None,
-        **kwargs
+        self, url: str, payload: dict, timeout: Optional[float] = None, **kwargs
     ) -> dict:
         """Make blocking HTTP POST request.
 
@@ -81,7 +77,7 @@ class BlockingClient(BaseLLMClient):
             ReadTimeout, ConnectTimeout, RequestException: On errors
         """
         # Start spinner for user feedback
-        self.spinner.start("Waiting for response…")
+        self.spinner.start()
 
         try:
             # Make single HTTP POST request
@@ -109,7 +105,7 @@ class BlockingClient(BaseLLMClient):
         use_thinking: bool = False,
         provider_name: str = "bedrock",
         show_model_name: bool = True,
-        live_window: int = 6
+        live_window: int = 6,
     ) -> LLMResponse:
         """Blocking version with live rendering for API compatibility.
 
@@ -165,10 +161,18 @@ class BlockingClient(BaseLLMClient):
             # Display error if any
             if result.error and console:
                 # Highlight network errors more prominently
-                if "Network error" in result.error or "502" in result.error or "Bad Gateway" in result.error:
+                if (
+                    "Network error" in result.error
+                    or "502" in result.error
+                    or "Bad Gateway" in result.error
+                ):
                     console.print()
-                    console.print(f"[bold red on yellow]⚠ {result.error}[/bold red on yellow]")
-                    console.print("[yellow]Tip: Check if the API server is running[/yellow]")
+                    console.print(
+                        f"[bold red on yellow]⚠ {result.error}[/bold red on yellow]"
+                    )
+                    console.print(
+                        "[yellow]Tip: Check if the API server is running[/yellow]"
+                    )
                     console.print()
                 else:
                     console.print(f"[red]Error: {result.error}[/red]")

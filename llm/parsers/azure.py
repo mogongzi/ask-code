@@ -135,14 +135,21 @@ class AzureResponseParser:
             output_tokens = usage.get("completion_tokens", 0)
             total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
 
-            # TODO: Calculate actual cost based on model pricing
-            cost = 0.0
+            cost = usage.get("cost")
+            if cost is None:
+                cost = usage.get("total_cost") or usage.get("usd_cost")
+
+            if cost in (None, 0, 0.0) and (input_tokens or output_tokens):
+                # Basic pricing defaults for GPT-style models (approximate)
+                input_cost = (input_tokens / 1000) * 0.003
+                output_cost = (output_tokens / 1000) * 0.006
+                cost = input_cost + output_cost
 
             return UsageInfo(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=total_tokens,
-                cost=cost
+                input_tokens=int(input_tokens),
+                output_tokens=int(output_tokens),
+                total_tokens=int(total_tokens),
+                cost=float(cost or 0.0)
             )
         except Exception as e:
             logger.error(f"Error extracting usage from Azure response: {e}")

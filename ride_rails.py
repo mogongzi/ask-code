@@ -76,13 +76,18 @@ def get_agent_input(
         instructions = f"{base_instructions}    {thinking_part}    /clear history    /status agent    Esc/Ctrl+C=cancel"
 
         if token_info:
-            terminal_width = 120
-            spaces_needed = max(
-                0, terminal_width - len(instructions) - len(f"Tokens: {token_info}")
-            )
-            console.print(
-                f"[dim]{instructions}{' ' * spaces_needed}Tokens: {token_info}[/dim]"
-            )
+            terminal_width = console.size.width if hasattr(console, "size") else 120
+            tokens_label = f"Tokens: {token_info}"
+            base_length = len(instructions)
+            padding_needed = terminal_width - base_length - len(tokens_label)
+
+            if padding_needed > 2:
+                padding = " " * (padding_needed - 1)
+                console.print(
+                    f"[dim]{instructions}{padding}{tokens_label}[/dim]"
+                )
+            else:
+                console.print(f"[dim]{instructions}  {tokens_label}[/dim]")
         else:
             console.print(f"[dim]{instructions}[/dim]")
 
@@ -254,18 +259,14 @@ def repl(
     while True:
         try:
             # Build enhanced display string
-            project_name = project_root.split("/")[-1] if project_root else "unknown"
             usage_display = usage.get_display_string()
             mode_indicator = "🧠" if thinking_mode else "🤖"
-            display_string = (
-                f"{mode_indicator} Rails Analysis • {project_name} • {usage_display}"
-            )
 
             # Get user input
             user_input, use_thinking, thinking_mode, tools_enabled = get_agent_input(
                 console,
                 PROMPT_STYLE,
-                display_string,
+                usage_display,
                 thinking_mode,
                 user_history,
                 tools_enabled,
