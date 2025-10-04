@@ -23,6 +23,8 @@ class TestAgentConfig:
         assert config.finalization_threshold == 2
         assert config.tool_repetition_limit == 3
         assert len(config.allowed_tools) > 0
+        assert config.max_history_tokens == 10000
+        assert config.recent_tool_result_messages == 2
 
     def test_custom_configuration(self):
         """Test configuration with custom values."""
@@ -43,6 +45,8 @@ class TestAgentConfig:
         assert config.timeout == 60.0
         assert config.finalization_threshold == 3
         assert config.tool_repetition_limit == 5
+        assert config.max_history_tokens == 10000
+        assert config.recent_tool_result_messages == 2
 
     def test_environment_variable_loading(self):
         """Test loading configuration from environment variables."""
@@ -88,6 +92,12 @@ class TestAgentConfig:
 
         with pytest.raises(ValueError, match="tool_repetition_limit must be positive"):
             AgentConfig(tool_repetition_limit=0)
+
+        with pytest.raises(ValueError, match="max_history_tokens must be positive"):
+            AgentConfig(max_history_tokens=0)
+
+        with pytest.raises(ValueError, match="recent_tool_result_messages must be positive"):
+            AgentConfig(recent_tool_result_messages=0)
 
     def test_validation_empty_allowed_tools(self):
         """Test validation of empty allowed tools."""
@@ -144,6 +154,8 @@ class TestAgentConfig:
         assert config_dict['project_root'] == "/test"
         assert config_dict['debug_enabled'] is True
         assert isinstance(config_dict['allowed_tools'], list)
+        assert config_dict['max_history_tokens'] == config.max_history_tokens
+        assert config_dict['recent_tool_result_messages'] == config.recent_tool_result_messages
 
     def test_allowed_tools_default_set(self):
         """Test that default allowed tools are properly set."""

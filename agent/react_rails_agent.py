@@ -4,6 +4,7 @@ Rails ReAct Agent with clean architecture.
 This module provides the main agent class that coordinates all components
 for intelligent Rails code analysis using the ReAct pattern.
 """
+
 from __future__ import annotations
 
 import time
@@ -17,11 +18,13 @@ from agent.state_machine import ReActStateMachine, StepType
 from agent.llm_client import LLMClient
 from agent.response_analyzer import ResponseAnalyzer
 from agent.exceptions import (
-    AgentError, ReActMaxStepsError, ReActLoopError,
-    ConfigurationError, ProjectNotFoundError
+    AgentError,
+    ReActMaxStepsError,
+    ReActLoopError,
 )
 from agent.logging import AgentLogger, log_agent_start, log_agent_complete
 from prompts.system_prompt import RAILS_REACT_SYSTEM_PROMPT
+from chat.conversation import ConversationManager
 
 
 class ReactRailsAgent:
@@ -43,27 +46,34 @@ class ReactRailsAgent:
         self.config = config or AgentConfig.create_default()
         self.console = Console()
         self.logger = AgentLogger.get_logger(
-            level=self.config.log_level,
-            console=self.console
+            level=self.config.log_level, console=self.console
         )
 
         # Initialize components
-        self.tool_registry = ToolRegistry(self.config.project_root, debug=self.config.debug_enabled)
+        self.tool_registry = ToolRegistry(
+            self.config.project_root, debug=self.config.debug_enabled
+        )
         self.state_machine = ReActStateMachine()
         self.llm_client = LLMClient(session, self.console)
         self.response_analyzer = ResponseAnalyzer()
 
-        # Track conversation history
-        self.conversation_history: List[Dict[str, Any]] = []
+        # Initialize conversation manager with compression settings
+        self.conversation = ConversationManager(
+            max_history_tokens=self.config.max_history_tokens,
+            recent_tool_results=self.config.recent_tool_result_messages,
+        )
 
         # Performance metrics
         self._start_time: Optional[float] = None
 
-        self.logger.info("ReactRailsAgent initialized", {
-            "project_root": self.config.project_root,
-            "max_steps": self.config.max_react_steps,
-            "available_tools": len(self.tool_registry.get_available_tools())
-        })
+        self.logger.info(
+            "ReactRailsAgent initialized",
+            {
+                "project_root": self.config.project_root,
+                "max_steps": self.config.max_react_steps,
+                "available_tools": len(self.tool_registry.get_available_tools()),
+            },
+        )
 
     def process_message(self, user_query: str) -> str:
         """
@@ -84,22 +94,16 @@ class ReactRailsAgent:
 
                 # Reset state for new query
                 self.state_machine.reset()
-                self.conversation_history = []
+                self.conversation.clear_history()
 
                 # Add user query to conversation
-                self.conversation_history.append({
-                    "role": "user",
-                    "content": user_query
-                })
+                self.conversation.add_user_message(user_query)
 
                 # Execute ReAct loop
                 response = self._execute_react_loop(user_query)
 
                 # Add agent response to history
-                self.conversation_history.append({
-                    "role": "assistant",
-                    "content": response
-                })
+                self.conversation.add_assistant_message(response)
 
                 # Log completion
                 duration_ms = (time.time() - self._start_time) * 1000
@@ -107,7 +111,7 @@ class ReactRailsAgent:
                     duration_ms,
                     self.state_machine.state.current_step,
                     len(self.state_machine.state.tools_used),
-                    True
+                    True,
                 )
 
                 return response
@@ -125,11 +129,10 @@ class ReactRailsAgent:
         Returns:
             Final agent response
         """
-        # Build initial messages with system prompt
+        # Build initial messages with system prompt and conversation history
         messages = [
-            {"role": "system", "content": RAILS_REACT_SYSTEM_PROMPT},
-            {"role": "user", "content": f"Please analyze this Rails query: {user_query}"}
-        ]
+            {"role": "system", "content": RAILS_REACT_SYSTEM_PROMPT}
+        ] + self.conversation.get_sanitized_history()
 
         while self.state_machine.should_continue(self.config.max_react_steps):
             try:
@@ -177,8 +180,9 @@ class ReactRailsAgent:
         with self.logger.operation("llm_call"):
             return self.llm_client.call_llm(messages, tool_schemas)
 
-    def _process_llm_response(self, llm_response: Any, messages: List[Dict[str, Any]],
-                             step_num: int) -> bool:
+    def _process_llm_response(
+        self, llm_response: Any, messages: List[Dict[str, Any]], step_num: int
+    ) -> bool:
         """
         Process LLM response and update state machine.
 
@@ -201,14 +205,16 @@ class ReactRailsAgent:
 
         # Record action and observation steps for tool calls
         if llm_response.tool_calls:
-            # Add tool messages to conversation for context
-            tool_messages = self.llm_client.format_tool_messages(llm_response.tool_calls)
-            messages.extend(tool_messages)
-
-            # Append context prompt to the tool_result user message (avoid consecutive user messages)
+            # Add tool messages to conversation manager (auto-compresses)
+            tool_messages = self.llm_client.format_tool_messages(
+                llm_response.tool_calls
+            )
+            self.conversation.add_tool_messages(tool_messages)
             if step_num > 1:
                 context_prompt = self._build_context_prompt()
                 self._append_to_last_user_message(messages, context_prompt)
+            else:
+                self._refresh_messages_from_history(messages)
 
             # Process each tool call
             for tool_call in llm_response.tool_calls:
@@ -218,7 +224,9 @@ class ReactRailsAgent:
 
                 # Record action
                 self.state_machine.record_action(tool_name, tool_input)
-                self.logger.log_react_step("action", step_num, f"Used {tool_name}", tool_name)
+                self.logger.log_react_step(
+                    "action", step_num, f"Used {tool_name}", tool_name
+                )
 
                 # Record observation
                 if tool_call.result:
@@ -228,7 +236,9 @@ class ReactRailsAgent:
 
         # Check for stuck state: no tool calls for multiple consecutive steps
         if self.state_machine.state.is_stuck_without_tools(max_consecutive_no_tools=2):
-            self.logger.warning(f"Agent stuck: {self.state_machine.state.consecutive_no_tool_calls} consecutive steps without tool calls")
+            self.logger.warning(
+                f"Agent stuck: {self.state_machine.state.consecutive_no_tool_calls} consecutive steps without tool calls"
+            )
             # Force finalization with current knowledge
             if llm_response.text and llm_response.text.strip():
                 self.state_machine.record_answer(llm_response.text)
@@ -236,11 +246,15 @@ class ReactRailsAgent:
                 return True
             else:
                 # No meaningful response, stop with error
-                self.state_machine.state.stop_with_reason("Agent stuck without tool calls")
+                self.state_machine.state.stop_with_reason(
+                    "Agent stuck without tool calls"
+                )
                 return True
 
         # Check for timeout after finalization request
-        if self.state_machine.state.is_stuck_after_finalization(max_steps_after_finalization=2):
+        if self.state_machine.state.is_stuck_after_finalization(
+            max_steps_after_finalization=2
+        ):
             self.logger.warning(f"Finalization timeout at step {step_num}")
             # Use the last meaningful response as answer
             if llm_response.text and llm_response.text.strip():
@@ -253,9 +267,7 @@ class ReactRailsAgent:
 
         # Analyze response to determine if we should stop
         analysis = self.response_analyzer.analyze_response(
-            llm_response.text,
-            self.state_machine.state,
-            step_num
+            llm_response.text, self.state_machine.state, step_num
         )
 
         if analysis.is_final:
@@ -264,51 +276,60 @@ class ReactRailsAgent:
             return True
 
         # Check if we should request finalization
-        if (llm_response.tool_calls and
-            self.response_analyzer.has_high_quality_tool_results(self.state_machine.state) and
-            not self.state_machine.state.finalize_requested):
-
+        if (
+            llm_response.tool_calls
+            and self.response_analyzer.has_high_quality_tool_results(
+                self.state_machine.state
+            )
+            and not self.state_machine.state.finalize_requested
+        ):
             finalization_prompt = self.response_analyzer.generate_finalization_prompt()
             self._append_to_last_user_message(messages, finalization_prompt)
             self.state_machine.state.request_finalization()
 
         # Check if we should force different tool usage
         elif self.response_analyzer.should_force_different_tool(
-            self.state_machine.state,
-            step_num,
-            self.config.tool_repetition_limit
+            self.state_machine.state, step_num, self.config.tool_repetition_limit
         ):
             available_tools = set(self.tool_registry.get_tool_names())
             constraint_prompt = self.response_analyzer.generate_tool_constraint_prompt(
-                self.state_machine.state,
-                available_tools
+                self.state_machine.state, available_tools
             )
             self._append_to_last_user_message(messages, constraint_prompt)
 
         return False
 
-    def _append_to_last_user_message(self, messages: List[Dict[str, Any]], text: str) -> None:
-        """
-        Append text to the last user message to avoid consecutive user messages.
-
-        Args:
-            messages: Message list to modify
-            text: Text to append
-        """
-        if not messages or messages[-1]["role"] != "user":
-            # Fallback: create new user message if last message isn't user
-            messages.append({"role": "user", "content": text})
+    def _append_to_last_user_message(
+        self, messages: List[Dict[str, Any]], text: str
+    ) -> None:
+        """Append text to the last user message and sync local state."""
+        if not text:
             return
 
-        # Append to existing user message content
-        last_msg = messages[-1]
-        if isinstance(last_msg["content"], list):
-            last_msg["content"].append({
-                "type": "text",
-                "text": text
-            })
-        elif isinstance(last_msg["content"], str):
-            last_msg["content"] += "\n" + text
+        self.conversation.append_to_last_user_message(text)
+        self._refresh_messages_from_history(messages)
+
+    def _refresh_messages_from_history(self, messages: List[Dict[str, Any]]) -> None:
+        """Sync the working message list with the conversation history."""
+        updated = [
+            {"role": "system", "content": RAILS_REACT_SYSTEM_PROMPT}
+        ] + self.conversation.get_sanitized_history()
+        self._strip_prompt_caching_metadata(updated)
+        messages[:] = updated
+
+    def _strip_prompt_caching_metadata(self, messages: List[Dict[str, Any]]) -> None:
+        for message in messages:
+            self._strip_prompt_caching_from_message(message)
+
+    def _strip_prompt_caching_from_message(self, message: Dict[str, Any]) -> None:
+        if not isinstance(message, dict):
+            return
+        message.pop("cache_control", None)
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    block.pop("cache_control", None)
 
     def _build_context_prompt(self) -> str:
         """Build context-aware prompt for the current step."""
@@ -319,31 +340,41 @@ class ReactRailsAgent:
         """Check for and handle infinite loops in the ReAct process."""
         # Check for tool repetition without results
         if self.state_machine.state.should_force_different_tool(step_threshold=2):
-            self.logger.warning(f"Potential loop detected at step {step_num}: repeated tool usage")
+            self.logger.warning(
+                f"Potential loop detected at step {step_num}: repeated tool usage"
+            )
 
             # If we've used significant steps without progress, stop
             if step_num > self.config.max_react_steps // 2:
                 raise ReActLoopError(
                     step_num,
                     "Repeated tool usage without progress",
-                    {"tools_used": list(self.state_machine.state.tools_used)}
+                    {"tools_used": list(self.state_machine.state.tools_used)},
                 )
 
         # Check for stuck state (no tool calls repeatedly)
         if self.state_machine.state.is_stuck_without_tools(max_consecutive_no_tools=3):
-            self.logger.error(f"Loop detected at step {step_num}: agent stuck without tool calls")
+            self.logger.error(
+                f"Loop detected at step {step_num}: agent stuck without tool calls"
+            )
             raise ReActLoopError(
                 step_num,
                 "Agent not making tool calls for multiple consecutive steps",
-                {"consecutive_no_tool_calls": self.state_machine.state.consecutive_no_tool_calls}
+                {
+                    "consecutive_no_tool_calls": self.state_machine.state.consecutive_no_tool_calls
+                },
             )
 
     def _generate_final_response(self) -> str:
         """Generate the final response based on ReAct steps."""
-        if self.state_machine.state.should_stop and self.state_machine.state.stop_reason:
+        if (
+            self.state_machine.state.should_stop
+            and self.state_machine.state.stop_reason
+        ):
             # We have a final answer
             answer_steps = [
-                step for step in self.state_machine.state.steps
+                step
+                for step in self.state_machine.state.steps
                 if step.step_type == StepType.ANSWER
             ]
             if answer_steps:
@@ -360,11 +391,12 @@ class ReactRailsAgent:
         """Generate a summary when the ReAct loop times out."""
         summary_parts = [
             "## Analysis Timeout - Partial Results\n",
-            f"⚠️ **Analysis stopped: {self.state_machine.state.stop_reason}**\n"
+            f"⚠️ **Analysis stopped: {self.state_machine.state.stop_reason}**\n",
         ]
 
         action_count = sum(
-            1 for step in self.state_machine.state.steps
+            1
+            for step in self.state_machine.state.steps
             if step.step_type == StepType.ACTION
         )
         summary_parts.append(f"**Tools executed:** {action_count}")
@@ -373,12 +405,20 @@ class ReactRailsAgent:
         summary_parts.append("### Analysis Trail:")
         for i, step in enumerate(self.state_machine.state.steps, 1):
             if step.step_type == StepType.THOUGHT:
-                content = step.content[:100] + "..." if len(step.content) > 100 else step.content
+                content = (
+                    step.content[:100] + "..."
+                    if len(step.content) > 100
+                    else step.content
+                )
                 summary_parts.append(f"{i}. **Thought:** {content}")
             elif step.step_type == StepType.ACTION:
                 summary_parts.append(f"{i}. **Action:** Used {step.tool_name}")
             elif step.step_type == StepType.OBSERVATION:
-                content = step.content[:100] + "..." if len(step.content) > 100 else step.content
+                content = (
+                    step.content[:100] + "..."
+                    if len(step.content) > 100
+                    else step.content
+                )
                 summary_parts.append(f"{i}. **Result:** {content}")
 
         summary_parts.append(
@@ -400,7 +440,11 @@ class ReactRailsAgent:
             elif step.step_type == StepType.ACTION:
                 summary_parts.append(f"**Tool Used:** {step.tool_name}")
             elif step.step_type == StepType.OBSERVATION:
-                content = step.content[:200] + "..." if len(step.content) > 200 else step.content
+                content = (
+                    step.content[:200] + "..."
+                    if len(step.content) > 200
+                    else step.content
+                )
                 summary_parts.append(f"**Result:** {content}")
 
         return "\n\n".join(summary_parts)
@@ -421,7 +465,7 @@ class ReactRailsAgent:
             duration_ms,
             self.state_machine.state.current_step,
             len(self.state_machine.state.tools_used),
-            False
+            False,
         )
 
         if isinstance(error, AgentError):
@@ -449,7 +493,7 @@ class ReactRailsAgent:
             "tool_registry": self.tool_registry.get_status_summary(),
             "state_machine": self.state_machine.state.to_dict(),
             "llm_client": self.llm_client.get_session_info(),
-            "conversation_length": len(self.conversation_history),
+            "conversation_length": len(self.conversation.history),
         }
 
     def get_step_summary(self, limit: int = 12) -> str:

@@ -52,3 +52,6 @@ logs/
 .DS_Store
 Thumbs.db
 
+# AI CLI
+.calude/
+.gemini-clipboard/

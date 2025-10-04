@@ -7,6 +7,7 @@ Separates UI concerns from business logic.
 from __future__ import annotations
 
 import logging
+import random
 from typing import Optional
 from rich.console import Console
 from rich.spinner import Spinner
@@ -44,7 +45,7 @@ class SpinnerManager:
         self._spinner_live: Optional[Live] = None
         self._is_active = False
 
-    def start(self, message: str = "Waiting for response…") -> None:
+    def start(self) -> None:
         """Start animated spinner.
 
         Args:
@@ -52,6 +53,8 @@ class SpinnerManager:
         """
         if self._is_active:
             return
+
+        message = f"{random.choice(['Gibberish', 'Abracadabra', 'Fiddle-faddle', 'Mumbo jumbo', 'Jabberwocky'])}......"
 
         try:
             spinner = Spinner(self.style, text=message, style=self.color)

@@ -104,19 +104,38 @@ class BedrockResponseParser:
         """
         try:
             usage = data.get("usage", {})
-            # Bedrock uses input_tokens and output_tokens (not inputTokens/outputTokens)
-            input_tokens = usage.get("input_tokens", 0) or usage.get("inputTokens", 0)
-            output_tokens = usage.get("output_tokens", 0) or usage.get("outputTokens", 0)
-            total_tokens = input_tokens + output_tokens
 
-            # TODO: Calculate actual cost based on model pricing
-            cost = 0.0
+            # Bedrock uses mixed casing for usage keys depending on endpoint
+            input_tokens = usage.get("input_tokens") or usage.get("inputTokens") or 0
+            output_tokens = usage.get("output_tokens") or usage.get("outputTokens") or 0
+            total_tokens = usage.get("total_tokens") or usage.get("totalTokens") or (input_tokens + output_tokens)
+
+            # Fallback to invocation metrics when present (blocking responses)
+            metrics = (
+                data.get("amazon-bedrock-invocationMetrics")
+                or data.get("amazonBedrockInvocationMetrics")
+                or {}
+            )
+            if metrics:
+                input_tokens = metrics.get("inputTokenCount", input_tokens) or input_tokens
+                output_tokens = metrics.get("outputTokenCount", output_tokens) or output_tokens
+                total_tokens = metrics.get("totalTokenCount", total_tokens) or total_tokens
+
+            cost = usage.get("cost")
+            if cost is None:
+                cost = usage.get("total_cost") or usage.get("usd_cost")
+
+            if cost in (None, 0, 0.0) and (input_tokens or output_tokens):
+                # Estimate cost using Claude 3.5 Sonnet pricing as default
+                input_cost = (input_tokens / 1000) * 0.00204
+                output_cost = (output_tokens / 1000) * 0.00988
+                cost = input_cost + output_cost
 
             return UsageInfo(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=total_tokens,
-                cost=cost
+                input_tokens=int(input_tokens),
+                output_tokens=int(output_tokens),
+                total_tokens=int(total_tokens),
+                cost=float(cost or 0.0)
             )
         except Exception as e:
             logger.error(f"Error extracting usage from Bedrock response: {e}")
