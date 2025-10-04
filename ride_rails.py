@@ -83,9 +83,7 @@ def get_agent_input(
 
             if padding_needed > 2:
                 padding = " " * (padding_needed - 1)
-                console.print(
-                    f"[dim]{instructions}{padding}{tokens_label}[/dim]"
-                )
+                console.print(f"[dim]{instructions}{padding}{tokens_label}[/dim]")
             else:
                 console.print(f"[dim]{instructions}  {tokens_label}[/dim]")
         else:
@@ -172,8 +170,9 @@ def repl(
 
     # Create client (streaming or blocking)
     client = create_streaming_client(use_streaming=use_streaming, console=console)
-    client_type = "streaming (SSE)" if use_streaming else "blocking (single request)"
-    console.print(f"[dim]Using {client_type} client[/dim]")
+    if verbose:
+        client_type = "streaming (SSE)" if use_streaming else "blocking (single request)"
+        console.print(f"[dim]Using {client_type} client[/dim]")
 
     # Create session
     session = ChatSession(
@@ -239,9 +238,10 @@ def repl(
             session.streaming_client = BlockingClient(
                 tool_executor=agent_executor, console=console
             )
-        console.print(
-            f"[dim]Tool executor configured with {len(available_tools)} tools[/dim]"
-        )
+        if verbose:
+            console.print(
+                f"[dim]Tool executor configured with {len(available_tools)} tools[/dim]"
+            )
 
         if verbose:
             tool_names = list(available_tools.keys())
