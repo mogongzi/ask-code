@@ -27,7 +27,7 @@ class SpinnerManager:
         console: Optional[Console] = None,
         style: str = "dots",
         color: str = "yellow",
-        refresh_rate: int = 10
+        refresh_rate: int = 10,
     ):
         """Initialize spinner manager.
 
@@ -58,7 +58,8 @@ class SpinnerManager:
             self._spinner_live = Live(
                 spinner,
                 console=self.console,
-                refresh_per_second=self.refresh_rate
+                refresh_per_second=self.refresh_rate,
+                transient=True,
             )
             self._spinner_live.start()
             self._is_active = True
@@ -86,14 +87,15 @@ class SpinnerManager:
         try:
             # Use Rich's file attribute which handles the proper stream
             # Rich.Live uses console.file (usually stderr by default)
-            if hasattr(self.console, 'file'):
+            if hasattr(self.console, "file"):
                 stream = self.console.file
             else:
                 import sys
+
                 stream = sys.stderr
 
             # Write ANSI clear code directly to the stream
-            stream.write('\r\033[K')
+            stream.write("\r\033[K")
             stream.flush()
         except Exception as e:
             logger.debug(f"Error clearing spinner line: {e}")
