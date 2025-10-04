@@ -5,6 +5,7 @@ Rails Code Analysis CLI using ReAct Agent
 Enhanced Rails code analysis tool that uses the ReAct agent architecture
 with improved error handling, configuration, and debugging capabilities.
 """
+
 import argparse
 import signal
 import os
@@ -33,7 +34,9 @@ console = Console()
 _ABORT = False
 
 
-def create_streaming_client(use_streaming: bool = False, console: Optional[Console] = None):
+def create_streaming_client(
+    use_streaming: bool = False, console: Optional[Console] = None
+):
     """Create and return streaming or blocking client.
 
     Args:
@@ -49,7 +52,9 @@ def create_streaming_client(use_streaming: bool = False, console: Optional[Conso
         return BlockingClient(console=console)
 
 
-def get_agent_input(console, prompt_style, display_string, thinking_mode, user_history, tools_enabled):
+def get_agent_input(
+    console, prompt_style, display_string, thinking_mode, user_history, tools_enabled
+):
     """
     Enhanced input function for the Rails agent.
 
@@ -57,7 +62,9 @@ def get_agent_input(console, prompt_style, display_string, thinking_mode, user_h
     """
     from util.simple_pt_input import _create_key_bindings, _prompt_for_input
 
-    def _display_enhanced_instructions(token_info: str = None, thinking_mode: bool = False) -> None:
+    def _display_enhanced_instructions(
+        token_info: str = None, thinking_mode: bool = False
+    ) -> None:
         """Display enhanced usage instructions for the Rails agent."""
         base_instructions = "↵ send    Ctrl+J newline"
 
@@ -70,8 +77,12 @@ def get_agent_input(console, prompt_style, display_string, thinking_mode, user_h
 
         if token_info:
             terminal_width = 120
-            spaces_needed = max(0, terminal_width - len(instructions) - len(f"Tokens: {token_info}"))
-            console.print(f"[dim]{instructions}{' ' * spaces_needed}Tokens: {token_info}[/dim]")
+            spaces_needed = max(
+                0, terminal_width - len(instructions) - len(f"Tokens: {token_info}")
+            )
+            console.print(
+                f"[dim]{instructions}{' ' * spaces_needed}Tokens: {token_info}[/dim]"
+            )
         else:
             console.print(f"[dim]{instructions}[/dim]")
 
@@ -132,25 +143,27 @@ def repl(
     Returns:
         Exit code (0 for success)
     """
-    console.rule("🚀 Enhanced Rails Analysis Agent")
+    console.rule("Enhanced Rails Analysis Agent")
 
     # Configure logging - WARNING by default, INFO/DEBUG in verbose mode
-    AgentLogger.configure(
-        level="DEBUG" if verbose else "WARNING",
-        console=console
-    )
+    AgentLogger.configure(level="DEBUG" if verbose else "WARNING", console=console)
 
     # Validate project root
     if not os.path.exists(project_root):
-        console.print(f"[red]Error: Project directory does not exist: {project_root}[/red]")
+        console.print(
+            f"[red]Error: Project directory does not exist: {project_root}[/red]"
+        )
         return 1
 
     # Add usage tracking
     from chat.usage_tracker import UsageTracker
+
     usage = UsageTracker(max_tokens_limit=MAX_TOKEN_SIZE)
 
     # Extract provider name
-    provider_name = provider.__name__.split('.')[-1] if hasattr(provider, '__name__') else "bedrock"
+    provider_name = (
+        provider.__name__.split(".")[-1] if hasattr(provider, "__name__") else "bedrock"
+    )
 
     # Create client (streaming or blocking)
     client = create_streaming_client(use_streaming=use_streaming, console=console)
@@ -164,7 +177,7 @@ def repl(
         max_tokens=4096,
         timeout=120.0,
         tool_executor=None,
-        provider_name=provider_name
+        provider_name=provider_name,
     )
 
     # Add usage tracker and client to session
@@ -180,7 +193,7 @@ def repl(
             debug_enabled=verbose,
             log_level="DEBUG" if verbose else "WARNING",
             tool_repetition_limit=4,  # Allow some repetition but prevent loops
-            finalization_threshold=3   # Request finalization after good results
+            finalization_threshold=3,  # Request finalization after good results
         )
 
         react_agent = ReactRailsAgent(config=config, session=session)
@@ -196,14 +209,17 @@ def repl(
         # Show configuration in verbose mode
         if verbose:
             status = react_agent.get_status()
-            config = status['config']
-            console.print(f"[dim]Config: {config['max_react_steps']} max steps, "
-                         f"debug={config['debug_enabled']}, "
-                         f"tools={len(status['tool_registry']['tools_available'])}[/dim]")
+            config = status["config"]
+            console.print(
+                f"[dim]Config: {config['max_react_steps']} max steps, "
+                f"debug={config['debug_enabled']}, "
+                f"tools={len(status['tool_registry']['tools_available'])}[/dim]"
+            )
     except Exception as e:
         console.print(f"[red]Error: Could not initialize ReAct agent: {e}[/red]")
         if verbose:
             import traceback
+
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         return 1
 
@@ -215,14 +231,20 @@ def repl(
         if use_streaming:
             session.streaming_client = StreamingClient(tool_executor=agent_executor)
         else:
-            session.streaming_client = BlockingClient(tool_executor=agent_executor, console=console)
-        console.print(f"[dim]Tool executor configured with {len(available_tools)} tools[/dim]")
+            session.streaming_client = BlockingClient(
+                tool_executor=agent_executor, console=console
+            )
+        console.print(
+            f"[dim]Tool executor configured with {len(available_tools)} tools[/dim]"
+        )
 
         if verbose:
             tool_names = list(available_tools.keys())
             console.print(f"[dim]Available tools: {', '.join(tool_names)}[/dim]")
     except Exception as e:
-        console.print(f"[yellow]Warning: could not attach agent tool executor: {e}[/yellow]")
+        console.print(
+            f"[yellow]Warning: could not attach agent tool executor: {e}[/yellow]"
+        )
 
     # Track UI state
     thinking_mode = False
@@ -232,10 +254,12 @@ def repl(
     while True:
         try:
             # Build enhanced display string
-            project_name = project_root.split('/')[-1] if project_root else "unknown"
+            project_name = project_root.split("/")[-1] if project_root else "unknown"
             usage_display = usage.get_display_string()
             mode_indicator = "🧠" if thinking_mode else "🤖"
-            display_string = f"{mode_indicator} Rails Analysis • {project_name} • {usage_display}"
+            display_string = (
+                f"{mode_indicator} Rails Analysis • {project_name} • {usage_display}"
+            )
 
             # Get user input
             user_input, use_thinking, thinking_mode, tools_enabled = get_agent_input(
@@ -256,7 +280,7 @@ def repl(
             if user_input and user_input.strip().lower() == "/clear":
                 user_history.clear()
 
-                if hasattr(session, 'conversation') and session.conversation:
+                if hasattr(session, "conversation") and session.conversation:
                     session.conversation.clear_history()
 
                 # Clear agent state
@@ -272,15 +296,23 @@ def repl(
                 status = react_agent.get_status()
                 console.print("[bold]Agent Status:[/bold]")
                 console.print(f"  Project: {status['config']['project_root']}")
-                console.print(f"  Steps completed: {status['state_machine']['current_step']}")
-                console.print(f"  Tools used: {len(status['state_machine']['tools_used'])}")
-                console.print(f"  Available tools: {len(status['tool_registry']['tools_available'])}")
+                console.print(
+                    f"  Steps completed: {status['state_machine']['current_step']}"
+                )
+                console.print(
+                    f"  Tools used: {len(status['state_machine']['tools_used'])}"
+                )
+                console.print(
+                    f"  Available tools: {len(status['tool_registry']['tools_available'])}"
+                )
                 console.print(f"  Session queries: {len(user_history)}")
                 console.print(f"  Debug mode: {status['config']['debug_enabled']}")
                 continue
 
             # Handle special commands
-            if handle_special_commands(user_input, None, console, None, None, None, react_agent):
+            if handle_special_commands(
+                user_input, None, console, None, None, None, react_agent
+            ):
                 continue
 
         except (EOFError, KeyboardInterrupt):
@@ -289,6 +321,7 @@ def repl(
         except Exception as e:
             if verbose:
                 import traceback
+
                 console.print(f"[red]Unexpected error: {e}[/red]")
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
             else:
@@ -325,18 +358,20 @@ def repl(
                     step_summary = react_agent.get_step_summary(limit=8)
                     if step_summary and step_summary.strip() != "No steps recorded.":
                         console.print("[dim]Analysis Steps:[/dim]")
-                        for line in step_summary.split('\n'):
+                        for line in step_summary.split("\n"):
                             if line.strip():
                                 console.print(f"[dim]  {line}[/dim]")
 
                     # Show detailed status
                     status = react_agent.get_status()
-                    state = status['state_machine']
-                    tools_used = len(state['tools_used'])
+                    state = status["state_machine"]
+                    tools_used = len(state["tools_used"])
                     if tools_used > 0:
-                        console.print(f"[dim]Debug: Tools used: {tools_used}, "
-                                    f"Step: {state['current_step']}, "
-                                    f"Should stop: {state.get('should_stop', False)}[/dim]")
+                        console.print(
+                            f"[dim]Debug: Tools used: {tools_used}, "
+                            f"Step: {state['current_step']}, "
+                            f"Should stop: {state.get('should_stop', False)}[/dim]"
+                        )
                 except Exception as e:
                     console.print(f"[dim]Debug - Step summary error: {e}[/dim]")
 
@@ -344,6 +379,7 @@ def repl(
             console.print(f"[red]Agent processing error: {e}[/red]")
             if verbose:
                 import traceback
+
                 console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
@@ -358,33 +394,27 @@ Examples:
   %(prog)s --project /path/to/rails/app
   %(prog)s --project /path/to/rails/app --verbose
   %(prog)s --project /path/to/rails/app --provider azure --verbose
-        """
+        """,
     )
+    parser.add_argument("--project", required=True, help="Rails project root directory")
     parser.add_argument(
-        "--project",
-        required=True,
-        help="Rails project root directory"
-    )
-    parser.add_argument(
-        "--url",
-        default=DEFAULT_URL,
-        help=f"Endpoint URL (default: {DEFAULT_URL})"
+        "--url", default=DEFAULT_URL, help=f"Endpoint URL (default: {DEFAULT_URL})"
     )
     parser.add_argument(
         "--provider",
         default="bedrock",
         choices=["bedrock", "azure"],
-        help="Provider adapter to use (default: bedrock)"
+        help="Provider adapter to use (default: bedrock)",
     )
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="Enable verbose mode with detailed logging (INFO and DEBUG levels)"
+        help="Enable verbose mode with detailed logging (INFO and DEBUG levels)",
     )
     parser.add_argument(
         "--streaming",
         action="store_true",
-        help="Use streaming API (SSE) instead of blocking (default: blocking)"
+        help="Use streaming API (SSE) instead of blocking (default: blocking)",
     )
     args = parser.parse_args(argv)
 
@@ -392,9 +422,11 @@ Examples:
     def _sigint(_sig, _frm):
         global _ABORT
         _ABORT = True
+
     def _sigterm(_sig, _frm):
         global _ABORT
         _ABORT = True
+
     def _sigquit(_sig, _frm):
         raise KeyboardInterrupt
 
@@ -427,6 +459,7 @@ Examples:
         console.print(f"[red]Startup error: {e}[/red]")
         if args.verbose:
             import traceback
+
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         return 1
 
