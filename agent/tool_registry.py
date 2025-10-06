@@ -14,7 +14,6 @@ from tools.base_tool import BaseTool
 from tools.ripgrep_tool import RipgrepTool
 from tools.enhanced_sql_rails_search import EnhancedSQLRailsSearch
 from tools.ast_grep_tool import AstGrepTool
-from tools.ctags_tool import CtagsTool
 from tools.model_analyzer import ModelAnalyzer
 from tools.controller_analyzer import ControllerAnalyzer
 from tools.route_analyzer import RouteAnalyzer
@@ -47,7 +46,6 @@ class ToolRegistry:
         'ripgrep': RipgrepTool,
         'enhanced_sql_rails_search': EnhancedSQLRailsSearch,
         'ast_grep': AstGrepTool,
-        'ctags': CtagsTool,
         'model_analyzer': ModelAnalyzer,
         'controller_analyzer': ControllerAnalyzer,
         'route_analyzer': RouteAnalyzer,
@@ -66,7 +64,6 @@ class ToolRegistry:
         'trace_sql': 'enhanced_sql_rails_search',
         'find_sql_source': 'enhanced_sql_rails_search',
         'astgrep': 'ast_grep',
-        'tags': 'ctags',
         'read_file': 'file_reader',
         'show_file': 'file_reader',
         'cat': 'file_reader',

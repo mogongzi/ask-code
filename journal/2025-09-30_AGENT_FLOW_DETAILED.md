@@ -43,8 +43,8 @@ def __init__(self, config, session):
 ```
 
 **Components initialized:**
-1. **ToolRegistry**: Loads and validates 10 Rails analysis tools
-   - `ripgrep`, `enhanced_sql_rails_search`, `ast_grep`, `ctags`
+1. **ToolRegistry**: Loads and validates 9 Rails analysis tools
+   - `ripgrep`, `enhanced_sql_rails_search`, `ast_grep`
    - `model_analyzer`, `controller_analyzer`, `route_analyzer`
    - `migration_analyzer`, `transaction_analyzer`, `file_reader`
 
@@ -411,7 +411,7 @@ def execute(self, input_params):
     pattern = input_params["pattern"]
     paths = input_params.get("paths", ["."])
 
-    # Build ctags command (uses universal-ctags or exuberant-ctags)
+    # Historical: ctags command (this integration was removed in favor of ripgrep/ast-grep searches)
     cmd = ["ctags", "-x", "--language-force=Ruby"]
 
     for path in paths:

@@ -179,8 +179,7 @@ class TestToolRegistry:
         synonyms_to_test = [
             ('grep', 'ripgrep'),
             ('sql_search', 'enhanced_sql_rails_search'),
-            ('astgrep', 'ast_grep'),
-            ('tags', 'ctags')
+            ('astgrep', 'ast_grep')
         ]
 
         for synonym, actual_name in synonyms_to_test:

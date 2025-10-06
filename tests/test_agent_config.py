@@ -163,7 +163,7 @@ class TestAgentConfig:
 
         expected_tools = {
             'ripgrep', 'enhanced_sql_rails_search', 'ast_grep',
-            'ctags', 'model_analyzer', 'controller_analyzer', 'route_analyzer',
+            'model_analyzer', 'controller_analyzer', 'route_analyzer',
             'migration_analyzer', 'transaction_analyzer'
         }
 
@@ -190,7 +190,7 @@ class TestAgentConfig:
         original_tools = {'ripgrep', 'ast_grep'}
         config = AgentConfig(allowed_tools=original_tools)
 
-        new_tools = {'ripgrep', 'ctags', 'model_analyzer'}
+        new_tools = {'ripgrep', 'model_analyzer'}
         updated = config.update(allowed_tools=new_tools)
 
         assert config.allowed_tools == original_tools

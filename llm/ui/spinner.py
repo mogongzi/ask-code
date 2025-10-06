@@ -30,7 +30,7 @@ class SpinnerManager:
     def __init__(
         self,
         console: Optional[Console] = None,
-        style: str = "dots",
+        style: str = "aesthetic",
         color: str = "yellow",
         refresh_rate: int = 12,
     ) -> None:
@@ -138,7 +138,11 @@ class SpinnerManager:
     # ------------------------------------------------------------------
     def update_message(self, message: str) -> None:
         """Update spinner message, preserving animation."""
-        if not self._is_active or not self._spinner_live or not self._spinner_renderable:
+        if (
+            not self._is_active
+            or not self._spinner_live
+            or not self._spinner_renderable
+        ):
             return
 
         try:

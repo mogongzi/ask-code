@@ -349,10 +349,6 @@ class ResponseAnalyzer:
                 "Using ast_grep",
                 "⚙ Using ast_grep"
             ],
-            "ctags": [
-                "Using ctags",
-                "⚙ Using ctags"
-            ],
             "model_analyzer": [
                 "Using model_analyzer",
                 "⚙ Using model_analyzer"
