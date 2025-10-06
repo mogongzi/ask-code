@@ -159,7 +159,6 @@ class TestResponseAnalyzer:
         tool_responses = [
             ("Using ripgrep to search for the pattern", "ripgrep"),
             ("⚙ Using ast_grep for class definitions", "ast_grep"),
-            ("Using ctags to find method definitions", "ctags"),
             ("⚙ Using enhanced_sql_rails_search", "enhanced_sql_rails_search")
         ]
 

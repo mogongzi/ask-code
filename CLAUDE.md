@@ -127,7 +127,7 @@ This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent a
 - **`tools/base_tool.py`**: Abstract base class for all analysis tools
 - **`tools/transaction_analyzer.py`**: Analyzes complete SQL transaction logs to identify Rails patterns and callback chains
 - **Rail-specific tools**: `model_analyzer.py`, `controller_analyzer.py`, `route_analyzer.py`, `migration_analyzer.py`
-- **Search tools**: `ripgrep_tool.py`, `ast_grep_tool.py`, `ctags_tool.py`, `enhanced_sql_rails_search.py`
+- **Search tools**: `ripgrep_tool.py`, `ast_grep_tool.py`, `enhanced_sql_rails_search.py`
 
 **Support Modules:**
 

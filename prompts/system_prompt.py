@@ -46,7 +46,6 @@ Find the exact Rails code that generates SQL queries from database logs. Use int
 - `route_analyzer(focus)` - Analyze routes
 - `migration_analyzer(migration_type, limit)` - Analyze migrations
 - `transaction_analyzer(transaction_log, ...)` - Analyze SQL transactions
-- `ctags(symbol, ...)` - Symbol lookup (use sparingly, slow)
 
 **Tool Protocol:**
 1. **One tool per message** - Call one tool, then STOP and wait for results
@@ -59,7 +58,6 @@ Find the exact Rails code that generates SQL queries from database logs. Use int
 - **Start with**: `enhanced_sql_rails_search` for SQL queries (fastest, most effective)
 - **Then use**: `file_reader` to examine found files for context
 - **Fall back to**: `ripgrep` if sql search doesn't find results
-- **Avoid**: `ctags` unless necessary (slow on large codebases)
 
 **Examples:**
 

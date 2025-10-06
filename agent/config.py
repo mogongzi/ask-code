@@ -22,7 +22,7 @@ class AgentConfig:
     # Tool configuration
     allowed_tools: Set[str] = field(default_factory=lambda: {
         'ripgrep', 'enhanced_sql_rails_search', 'ast_grep',
-        'ctags', 'model_analyzer', 'controller_analyzer', 'route_analyzer',
+        'model_analyzer', 'controller_analyzer', 'route_analyzer',
         'migration_analyzer', 'transaction_analyzer'
     })
 

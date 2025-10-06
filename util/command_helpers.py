@@ -84,7 +84,7 @@ def handle_special_commands(user_input: Optional[str], conversation, console=Non
             # Quick binary availability check for popular CLIs
             try:
                 import shutil
-                bins = {"rg": "ripgrep", "ast-grep": "ast-grep", "ctags": "universal-ctags"}
+                bins = {"rg": "ripgrep", "ast-grep": "ast-grep"}
                 statuses = []
                 for b, label in bins.items():
                     ok = shutil.which(b) is not None
