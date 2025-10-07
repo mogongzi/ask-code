@@ -5,6 +5,11 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 Event = Tuple[str, Optional[str]]  # ("model"|"text"|"tool_start"|"tool_input_delta"|"tool_ready"|"done"|"tokens", value)
 
+# Approximate maximum context window for the default Azure/OpenAI config used here.
+# GPT-5 example configuration supports ~272k tokens context.
+# Exposed so the CLI can size its usage indicator appropriately.
+context_length: int = 272_000
+
 def _build_openai_tools(tools: List[dict]) -> List[dict]:
     """Build OpenAI tools array from tool definitions.
 

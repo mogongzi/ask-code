@@ -9,6 +9,11 @@ Event = Tuple[str, Optional[str]]  # ("model"|"text"|"thinking"|"tool_start"|"to
 # Bedrock Anthropic does not support prompt caching yet.
 supports_prompt_caching = False
 
+# Approximate maximum context window for common Bedrock Anthropic models.
+# Claude 4 Sonnet supports ~200k tokens context.
+# Exposed so the CLI can size its usage indicator appropriately.
+context_length: int = 200_000
+
 
 def build_payload(
     messages: List[dict], *, model: Optional[str] = None, max_tokens: int = 4096, temperature: Optional[float] = None, thinking: bool = False, thinking_tokens: int = 1024, tools: Optional[List[dict]] = None, system_prompt: Optional[str] = None, stop_sequences: Optional[List[str]] = None, **_: dict
