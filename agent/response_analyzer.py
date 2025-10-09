@@ -42,6 +42,19 @@ class ResponseAnalyzer:
         "## Conclusion"
     ]
 
+    # Phrases that indicate intent to investigate further (NOT final)
+    INVESTIGATION_INTENT_PATTERNS = [
+        r"let me (examine|check|read|analyze|look at|investigate)",
+        r"I'll (examine|check|read|analyze|look at|investigate)",
+        r"I will (examine|check|read|analyze|look at|investigate)",
+        r"let's (examine|check|read|analyze|look at|investigate)",
+        r"going to (examine|check|read|analyze|look at|investigate)",
+        r"need to (examine|check|read|analyze|look at|investigate)",
+        r"should (examine|check|read|analyze|look at|investigate)",
+        r"which was identified as",  # "...file which was identified as the main source"
+        r"identified as the (main|primary) source",
+    ]
+
     # Patterns that indicate concrete results
     CONCRETE_RESULT_PATTERNS = [
         r"(app|lib|config)/[\w/]+\.rb",  # Ruby files in Rails directories (with or without colon)
@@ -82,6 +95,18 @@ class ResponseAnalyzer:
             AnalysisResult with analysis outcome
         """
         response_lower = response.lower()
+
+        # CRITICAL: Check for investigation intent first (overrides other patterns)
+        # If the LLM says "let me examine/check/analyze", it's NOT final
+        for pattern in self.INVESTIGATION_INTENT_PATTERNS:
+            if re.search(pattern, response_lower, re.IGNORECASE):
+                return AnalysisResult(
+                    is_final=False,
+                    confidence="high",
+                    reason=f"Response indicates intent to investigate further",
+                    suggestions=["Wait for next tool execution"],
+                    has_concrete_results=False
+                )
 
         # Check for explicit final answer indicators
         for indicator in self.FINAL_ANSWER_INDICATORS:
@@ -165,9 +190,18 @@ class ResponseAnalyzer:
             AnalysisResult if final answer detected, None otherwise
         """
         # Pattern 1: Emoji-prefixed conclusion headers (e.g., "🎯 EXACT MATCH FOUND", "✅ FOUND", etc.)
-        if re.search(r'(^|\n)[\U0001F300-\U0001F9FF]\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL|ANSWER|RESULT)',
-                     response, re.IGNORECASE | re.MULTILINE):
-            if self._has_concrete_results(response):
+        # BUT: Only if not followed by investigation intent
+        emoji_match = re.search(r'(^|\n)[\U0001F300-\U0001F9FF]\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL|ANSWER|RESULT)',
+                     response, re.IGNORECASE | re.MULTILINE)
+        if emoji_match:
+            # Check if the "FOUND" is followed by investigation intent
+            text_after_match = response[emoji_match.end():emoji_match.end()+200]  # Check next 200 chars
+            has_investigation_intent = any(
+                re.search(pattern, text_after_match, re.IGNORECASE)
+                for pattern in self.INVESTIGATION_INTENT_PATTERNS
+            )
+
+            if not has_investigation_intent and self._has_concrete_results(response):
                 return AnalysisResult(
                     is_final=True,
                     confidence="high",

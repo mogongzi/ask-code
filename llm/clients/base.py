@@ -16,6 +16,7 @@ from llm.parsers import ParserRegistry, ResponseParser
 from llm.tool_execution import ToolExecutionService
 from llm.error_handling import ErrorHandler, with_error_handling
 from tools.executor import ToolExecutor
+from rich.console import Console
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +34,20 @@ class BaseLLMClient(ABC):
     def __init__(
         self,
         tool_executor: Optional[ToolExecutor] = None,
+        console: Optional[Console] = None,
         provider: Provider = Provider.BEDROCK
     ):
         """Initialize base client.
 
         Args:
             tool_executor: Optional tool executor for function calling
+            console: Rich console for output
             provider: Provider type (determines parser to use)
         """
         self.provider = provider
         self.parser = ParserRegistry.get_parser(provider)
-        self.tool_service = ToolExecutionService(tool_executor)
+        self.console = console or Console()
+        self.tool_service = ToolExecutionService(tool_executor, console=self.console)
         self._abort = False
 
     def abort(self) -> None:

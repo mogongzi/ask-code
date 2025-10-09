@@ -66,8 +66,7 @@ class StreamingClient(BaseLLMClient):
             provider: Provider type (determines parser)
             timeout: Default request timeout in seconds
         """
-        super().__init__(tool_executor, provider)
-        self.console = console or Console()
+        super().__init__(tool_executor, console, provider)
         self.timeout = timeout
 
     def _make_request(
