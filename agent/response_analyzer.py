@@ -44,11 +44,24 @@ class ResponseAnalyzer:
 
     # Patterns that indicate concrete results
     CONCRETE_RESULT_PATTERNS = [
-        r"app/.*\.rb:",           # File paths with line numbers
-        r"def \w+",               # Method definitions
-        r"class \w+",             # Class definitions
-        r"scope :\w+",            # ActiveRecord scopes
-        r"where\(",               # ActiveRecord where clauses
+        r"(app|lib|config)/[\w/]+\.rb",  # Ruby files in Rails directories (with or without colon)
+        r"def \w+",                       # Method definitions
+        r"class \w+",                     # Class definitions
+        r"scope :\w+",                    # ActiveRecord scopes
+        r"where\(",                       # ActiveRecord where clauses
+    ]
+
+    # Rails directory patterns (expanded to include lib/, config/, etc.)
+    RAILS_DIRECTORIES = [
+        "app/models/",
+        "app/controllers/",
+        "app/services/",
+        "app/helpers/",
+        "app/jobs/",
+        "app/mailers/",
+        "app/",
+        "lib/",
+        "config/",
     ]
 
     def __init__(self):
@@ -81,6 +94,11 @@ class ResponseAnalyzer:
                     has_concrete_results=True
                 )
 
+        # Check for semantic final answer patterns (emoji-prefixed conclusions, etc.)
+        semantic_result = self._check_semantic_final_patterns(response, react_state)
+        if semantic_result:
+            return semantic_result
+
         # Check for concrete code results with file paths
         has_concrete = self._has_concrete_results(response)
         if has_concrete and self._has_rails_patterns(response):
@@ -100,6 +118,16 @@ class ResponseAnalyzer:
                 reason="Contains specific ActiveRecord code patterns",
                 suggestions=[],
                 has_concrete_results=True
+            )
+
+        # Context-aware detection: if no tool calls after having concrete results, likely final
+        if self._is_likely_final_from_context(response, react_state):
+            return AnalysisResult(
+                is_final=True,
+                confidence="medium",
+                reason="Concrete results presented without new tool calls (likely finalization)",
+                suggestions=[],
+                has_concrete_results=has_concrete
             )
 
         # Check if we should continue based on step and state
@@ -122,15 +150,109 @@ class ResponseAnalyzer:
                 return True
         return ("app/" in response and ".rb" in response) or ("def " in response)
 
+    def _check_semantic_final_patterns(self, response: str, react_state: ReActState) -> Optional[AnalysisResult]:
+        """
+        Check for semantic patterns that indicate a final answer.
+
+        This detects conclusions that may not use exact hardcoded phrases,
+        such as emoji-prefixed headings, conclusion structures, etc.
+
+        Args:
+            response: The LLM response text
+            react_state: Current ReAct state
+
+        Returns:
+            AnalysisResult if final answer detected, None otherwise
+        """
+        # Pattern 1: Emoji-prefixed conclusion headers (e.g., "🎯 EXACT MATCH FOUND", "✅ FOUND", etc.)
+        if re.search(r'(^|\n)[\U0001F300-\U0001F9FF]\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL|ANSWER|RESULT)',
+                     response, re.IGNORECASE | re.MULTILINE):
+            if self._has_concrete_results(response):
+                return AnalysisResult(
+                    is_final=True,
+                    confidence="high",
+                    reason="Contains emoji-prefixed conclusion with concrete results",
+                    suggestions=[],
+                    has_concrete_results=True
+                )
+
+        # Pattern 2: Structured conclusion sections with headers
+        conclusion_headers = [
+            r'(^|\n)#{1,3}\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL ANSWER|ANALYSIS COMPLETE)',
+            r'(^|\n)(EXACT MATCH|FOUND|SOLUTION)[:：]',
+            r'(^|\n)File:\s+\w+',  # "File: lib/..." format
+            r'(^|\n)Location:\s+\w+',
+        ]
+
+        for header_pattern in conclusion_headers:
+            if re.search(header_pattern, response, re.IGNORECASE | re.MULTILINE):
+                if self._has_concrete_results(response) and self._has_rails_patterns(response):
+                    return AnalysisResult(
+                        is_final=True,
+                        confidence="high",
+                        reason="Contains structured conclusion section with file locations",
+                        suggestions=[],
+                        has_concrete_results=True
+                    )
+
+        # Pattern 3: Confidence statements + execution flow (comprehensive answer structure)
+        has_confidence = bool(re.search(r'confidence|likely|certain|match', response, re.IGNORECASE))
+        has_flow = bool(re.search(r'(execution flow|flow:|step \d+|triggered by)', response, re.IGNORECASE))
+        has_code = self._has_concrete_results(response)
+        has_rails = self._has_rails_patterns(response)
+
+        if has_confidence and has_flow and has_code and has_rails and len(response) > 500:
+            return AnalysisResult(
+                is_final=True,
+                confidence="high",
+                reason="Contains comprehensive answer with confidence, flow analysis, and code locations",
+                suggestions=[],
+                has_concrete_results=True
+            )
+
+        return None
+
+    def _is_likely_final_from_context(self, response: str, react_state: ReActState) -> bool:
+        """
+        Use step context to determine if this is likely a final answer.
+
+        This detects cases where:
+        - Previous step(s) had tool calls
+        - Current step has no tool calls (presenting results)
+        - Response contains concrete results
+
+        Args:
+            response: The LLM response text
+            react_state: Current ReAct state
+
+        Returns:
+            True if likely final based on context, False otherwise
+        """
+        # Check if we just stopped using tools (consecutive_no_tool_calls == 1)
+        # and we have concrete results to present
+        if react_state.consecutive_no_tool_calls == 1:
+            has_concrete = self._has_concrete_results(response)
+            has_rails = self._has_rails_patterns(response)
+            is_substantial = len(response) > 300  # Non-trivial response
+
+            # If we have concrete results and stopped calling tools, likely final
+            if has_concrete and has_rails and is_substantial:
+                return True
+
+        return False
+
     def _has_rails_patterns(self, response: str) -> bool:
         """Check if response contains Rails-specific patterns."""
-        rails_patterns = [
-            "app/models/",
-            "app/controllers/",
-            "app/",
-            ".rb:",
-        ]
-        return any(pattern in response for pattern in rails_patterns)
+        # Check for any Rails directory path
+        for directory in self.RAILS_DIRECTORIES:
+            if directory in response:
+                return True
+
+        # Also accept Ruby files without explicit directory if they have .rb extension
+        if re.search(r'\.rb\b', response):
+            return True
+
+        return False
 
     def _has_activerecord_patterns(self, response: str) -> bool:
         """Check for specific ActiveRecord code patterns."""
