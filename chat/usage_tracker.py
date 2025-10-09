@@ -19,19 +19,18 @@ class UsageTracker:
             self.total_cost += cost
 
     def get_display_string(self) -> Optional[str]:
-        """Format usage statistics for prompt display."""
+        """Format usage statistics for prompt display.
+
+        Shows session cumulative tokens vs provider limit without a misleading percent.
+        """
         if self.total_tokens_used <= 0:
             return None
 
-        # Format token count with k notation for large numbers
-        if self.max_tokens_limit > 0:
-            percentage = (self.total_tokens_used / self.max_tokens_limit) * 100
+        # Format token count with k notation for large numbers (no percentage)
+        if self.total_tokens_used >= 1000 or self.max_tokens_limit >= 1000:
+            token_part = f"{self.total_tokens_used/1000:.1f}k/{self.max_tokens_limit/1000:.0f}k"
         else:
-            percentage = float('inf')  # Handle zero limit case
-        if self.total_tokens_used >= 1000:
-            token_part = f"{self.total_tokens_used/1000:.1f}k/{self.max_tokens_limit/1000:.0f}k ({percentage:.1f}%)"
-        else:
-            token_part = f"{self.total_tokens_used}/{self.max_tokens_limit} ({percentage:.1f}%)"
+            token_part = f"{self.total_tokens_used}/{self.max_tokens_limit}"
 
         # Scale cost precision based on magnitude
         if self.total_cost >= 0.01:
