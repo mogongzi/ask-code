@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from .base_tool import BaseTool
 from .enhanced_sql_rails_search import EnhancedSQLRailsSearch
+from util.sql_log_extractor import AdaptiveSQLExtractor, SQLType, ExtractedSQL
 from .model_analyzer import ModelAnalyzer
 
 
@@ -127,42 +128,62 @@ class TransactionAnalyzer(BaseTool):
             return {"error": f"Transaction analysis failed: {str(e)}"}
 
     def _parse_transaction_log(self, log: str) -> TransactionFlow:
-        """Parse MySQL general log format into structured queries."""
-        lines = log.strip().split('\n')
-        queries = []
-        current_query = None
+        """Parse DB logs into structured queries using adaptive pre-processing."""
+        extractor = AdaptiveSQLExtractor()
+        extracted = extractor.extract_all_sql(log)
 
-        # MySQL general log pattern: YYYY-MM-DDTHH:MM:SS.microsZ connection_id Query SQL
-        log_pattern = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+(\d+)\s+(\w+)\s+(.+)$')
+        queries: List[SQLQuery] = []
 
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
+        if not extracted:
+            # Fallback: attempt to parse strict MySQL general log entries (best-effort)
+            lines = log.strip().split('\n')
+            log_pattern = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)\s+(\d+)\s+(\w+)(?:\s+(.*))?$')
+            current: Optional[SQLQuery] = None
+            for raw in lines:
+                line = raw.strip()
+                if not line:
+                    continue
+                m = log_pattern.match(line)
+                if m:
+                    # finalize previous
+                    if current and current.sql:
+                        # recompute using full SQL
+                        current.operation = self._extract_operation(current.sql)
+                        current.table = self._extract_table(current.sql, current.operation)
+                        queries.append(current)
+                    timestamp, conn_id, query_type, sql_part = m.groups()
+                    current = SQLQuery(
+                        timestamp=timestamp,
+                        connection_id=conn_id,
+                        query_type=query_type,
+                        sql=(sql_part or '').strip(),
+                        operation=self._extract_operation(sql_part or ''),
+                        table=self._extract_table(sql_part or '', self._extract_operation(sql_part or '')),
+                    )
+                elif current:
+                    current.sql += ("\n" if current.sql else "") + line
+            if current and current.sql:
+                current.operation = self._extract_operation(current.sql)
+                current.table = self._extract_table(current.sql, current.operation)
+                queries.append(current)
+        else:
+            # Convert extracted statements into SQLQuery entries
+            for stmt in extracted:
+                # If a transaction block was extracted as a single statement, split into sub-statements
+                parts = self._split_block_into_statements(stmt.sql) if stmt.sql_type == SQLType.TRANSACTION else [stmt.sql]
+                for idx, part in enumerate(parts):
+                    op = self._extract_operation(part)
+                    table = self._extract_table(part, op)
+                    timestamp = self._parse_timestamp_from_metadata(stmt.metadata_removed) or ""
+                    queries.append(SQLQuery(
+                        timestamp=timestamp,
+                        connection_id="",
+                        query_type="Query",
+                        sql=part,
+                        operation=op,
+                        table=table
+                    ))
 
-            match = log_pattern.match(line)
-            if match:
-                timestamp, conn_id, query_type, sql = match.groups()
-
-                # Determine operation type
-                operation = self._extract_operation(sql)
-                table = self._extract_table(sql, operation)
-
-                query = SQLQuery(
-                    timestamp=timestamp,
-                    connection_id=conn_id,
-                    query_type=query_type,
-                    sql=sql,
-                    operation=operation,
-                    table=table
-                )
-
-                queries.append(query)
-            elif current_query:
-                # Multi-line query continuation
-                current_query.sql += " " + line
-
-        # Analyze data flow and relationships
         flow = TransactionFlow(
             queries=queries,
             trigger_chain=[],
@@ -176,8 +197,9 @@ class TransactionAnalyzer(BaseTool):
         return flow
 
     def _extract_operation(self, sql: str) -> str:
-        """Extract the main SQL operation type."""
-        sql_upper = sql.upper().strip()
+        """Extract the main SQL operation type (comment-aware)."""
+        sql_no_comments = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
+        sql_upper = sql_no_comments.upper().strip()
 
         if sql_upper.startswith('SELECT'):
             return 'SELECT'
@@ -187,7 +209,7 @@ class TransactionAnalyzer(BaseTool):
             return 'UPDATE'
         elif sql_upper.startswith('DELETE'):
             return 'DELETE'
-        elif sql_upper.startswith('BEGIN'):
+        elif sql_upper.startswith('BEGIN') or sql_upper.startswith('START TRANSACTION') or sql_upper.startswith('BEGIN TRANSACTION') or sql_upper.startswith('BEGIN WORK'):
             return 'BEGIN'
         elif sql_upper.startswith('COMMIT'):
             return 'COMMIT'
@@ -197,9 +219,11 @@ class TransactionAnalyzer(BaseTool):
             return 'OTHER'
 
     def _extract_table(self, sql: str, operation: str) -> Optional[str]:
-        """Extract the primary table name from SQL."""
-        sql_clean = re.sub(r'`', '', sql)  # Remove backticks
+        """Extract a primary table name from SQL (comment/backtick aware)."""
+        sql_no_comments = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
+        sql_clean = re.sub(r'`', '', sql_no_comments)
 
+        match = None
         if operation == 'INSERT':
             match = re.search(r'INSERT\s+INTO\s+(\w+)', sql_clean, re.IGNORECASE)
         elif operation == 'SELECT':
@@ -212,6 +236,41 @@ class TransactionAnalyzer(BaseTool):
             return None
 
         return match.group(1) if match else None
+
+    def _parse_timestamp_from_metadata(self, metadata: str) -> Optional[str]:
+        """Extract ISO timestamp from the metadata prefix if present."""
+        if not metadata:
+            return None
+        m = re.search(r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z)', metadata)
+        return m.group(1) if m else None
+
+    def _split_block_into_statements(self, sql_block: str) -> List[str]:
+        """Split a transaction block into individual statements conservatively."""
+        if not sql_block:
+            return []
+        lines = [l for l in sql_block.split('\n') if l.strip()]
+        if not lines:
+            return []
+
+        starters = (
+            'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'BEGIN', 'START TRANSACTION', 'COMMIT', 'ROLLBACK'
+        )
+        parts: List[str] = []
+        buf: List[str] = []
+        for line in lines:
+            u = line.lstrip().upper()
+            if any(u.startswith(s) for s in starters):
+                if buf:
+                    parts.append('\n'.join(buf))
+                    buf = []
+            buf.append(line)
+            # End on explicit semicolon; COMMIT/ROLLBACK lines are handled by next starter or end
+            if line.rstrip().endswith(';') and buf:
+                parts.append('\n'.join(buf))
+                buf = []
+        if buf:
+            parts.append('\n'.join(buf))
+        return parts
 
     def _analyze_data_flow(self, flow: TransactionFlow) -> None:
         """Analyze how data flows between queries via values and references."""
@@ -353,19 +412,26 @@ class TransactionAnalyzer(BaseTool):
                         "likely_cause": "Foreign key relationship or data dependency"
                     })
 
-        # Pattern 5: CONTROLLER CONTEXT - Extract any controller/action information
+        # Pattern 5: CONTROLLER CONTEXT - Extract controller/action from MySQL-style comments
         for query in flow.queries:
-            controller_match = re.search(r"'controller'\s*[,=]\s*'([^']+)'", query.sql)
-            action_match = re.search(r"'action'\s*[,=]\s*'([^']+)'", query.sql)
+            sql = query.sql
+            # Support both quoted pairs and MySQL /* controller:Foo, action:bar */ comments
+            controller_match = re.search(r"'controller'\s*[,=]\s*'([^']+)'", sql)
+            action_match = re.search(r"'action'\s*[,=]\s*'([^']+)'", sql)
+            if not (controller_match and action_match):
+                controller_match = re.search(r"controller:([A-Za-z0-9_]+)", sql)
+                action_match = re.search(r"action:([A-Za-z0-9_]+)", sql)
 
             if controller_match and action_match:
+                ctrl = controller_match.group(1)
+                act = action_match.group(1)
                 patterns.append({
                     "pattern_type": "controller_context",
-                    "description": f"Operation in context of {controller_match.group(1)}#{action_match.group(1)}",
-                    "controller": controller_match.group(1),
-                    "action": action_match.group(1),
+                    "description": f"Operation in context of {ctrl}#{act}",
+                    "controller": ctrl,
+                    "action": act,
                     "table": query.table,
-                    "likely_source": f"{controller_match.group(1).title().replace('_', '')}Controller#{action_match.group(1)}"
+                    "likely_source": f"{ctrl.title().replace('_', '')}Controller#{act}"
                 })
 
         flow.rails_patterns = patterns
