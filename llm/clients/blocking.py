@@ -52,8 +52,7 @@ class BlockingClient(BaseLLMClient):
             provider: Provider type (determines parser)
             timeout: Default request timeout in seconds
         """
-        super().__init__(tool_executor, provider)
-        self.console = console or Console()
+        super().__init__(tool_executor, console, provider)
         self.timeout = timeout
         self.spinner = SpinnerManager(console=self.console)
 
@@ -151,12 +150,8 @@ class BlockingClient(BaseLLMClient):
             if result.text and console:
                 console.print(result.text)
 
-            # Display tool executions
-            if result.tool_calls and console:
-                for tool_call in result.tool_calls:
-                    console.print(f"[yellow]⚙ Using {tool_call.name} tool...[/yellow]")
-                    if tool_call.result:
-                        console.print(f"[green]✓ {tool_call.result}[/green]")
+            # Note: Tool execution messages are now displayed by ToolExecutionService
+            # during execution, so no need to display them again here
 
             # Display error if any
             if result.error and console:

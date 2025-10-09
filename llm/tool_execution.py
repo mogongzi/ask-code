@@ -14,6 +14,7 @@ from llm.types import ToolCall
 from llm.parsers.base import ResponseParser
 from llm.exceptions import ToolExecutionError
 from tools.executor import ToolExecutor
+from rich.console import Console
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +30,16 @@ class ToolExecutionService:
     This eliminates ~30 lines of duplicated code between streaming and blocking clients.
     """
 
-    def __init__(self, tool_executor: Optional[ToolExecutor] = None):
+    def __init__(self, tool_executor: Optional[ToolExecutor] = None, console: Optional[Console] = None):
         """Initialize tool execution service.
 
         Args:
             tool_executor: ToolExecutor instance for running tools.
                           If None, no tools will be executed.
+            console: Rich console for UI output during tool execution.
         """
         self.tool_executor = tool_executor
+        self.console = console or Console()
 
     def extract_and_execute(
         self,
@@ -92,6 +95,9 @@ class ToolExecutionService:
 
         logger.debug(f"Executing tool: {tool_name} with input: {tool_input}")
 
+        # Display "Using tool..." message BEFORE execution starts
+        self.console.print(f"[yellow]⚙ Using {tool_name} tool...[/yellow]")
+
         try:
             # Execute the tool
             result_data = self.tool_executor.execute_tool(tool_name, tool_input)
@@ -105,6 +111,12 @@ class ToolExecutionService:
                 logger.warning(f"Tool {tool_name} returned error: {result_data['error']}")
                 result_content = f"Error: {result_data['error']}"
                 display_content = result_content  # Same for errors
+                # Display error
+                self.console.print(f"[red]✗ {display_content}[/red]")
+            else:
+                # Display success with compact result
+                if display_content:
+                    self.console.print(f"[green]✓ {display_content}[/green]")
 
             # Create ToolCall object with both full and display results
             return ToolCall(
@@ -119,6 +131,8 @@ class ToolExecutionService:
             logger.error(f"Failed to execute tool {tool_name}: {e}", exc_info=True)
             # Return ToolCall with error message as result
             error_msg = f"Tool execution failed: {str(e)}"
+            # Display exception error
+            self.console.print(f"[red]✗ {error_msg}[/red]")
             return ToolCall(
                 id=tool_id,
                 name=tool_name,
