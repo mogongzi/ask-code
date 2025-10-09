@@ -15,11 +15,13 @@ class ConversationManager:
     def add_user_message(self, content: str) -> None:
         """Add a user message to conversation history."""
         self.history.append({"role": "user", "content": content})
+        self._compress_history_if_needed()
 
     def add_assistant_message(self, content: str) -> None:
         """Add an assistant message to conversation history."""
         if content and content.strip():  # Only add non-empty responses
             self.history.append({"role": "assistant", "content": content})
+            self._compress_history_if_needed()
 
     def add_tool_messages(self, tool_messages: List[dict]) -> None:
         """Add tool call and result messages to conversation history."""
@@ -44,6 +46,9 @@ class ConversationManager:
             last_message["content"] = f"{content}\n{text}" if content else text
         else:
             last_message["content"] = text
+
+        # Ensure we stay within budget after appending context
+        self._compress_history_if_needed()
 
     def clear_history(self) -> None:
         """Clear the conversation history."""
@@ -74,14 +79,95 @@ class ConversationManager:
     # Internal helpers -------------------------------------------------
 
     def _compress_history_if_needed(self) -> None:
-        """Compress history when estimated tokens exceed budget."""
+        """Compress and trim history when estimated tokens exceed budget."""
         if not self.max_history_tokens or self.max_history_tokens <= 0:
             return
 
+        # Fast path: under budget
         if self._estimate_tokens(self.history) <= self.max_history_tokens:
             return
 
+        # Step 1: compress older tool results
         self._compress_tool_results()
+
+        # Re-check budget
+        if self._estimate_tokens(self.history) <= self.max_history_tokens:
+            return
+
+        # Step 2: trim oldest non-essential messages to fit budget
+        self._trim_history_to_budget(self.max_history_tokens)
+
+    def _trim_history_to_budget(self, budget_tokens: int) -> None:
+        """Trim oldest non-essential messages until within token budget.
+
+        Preservation rules (from highest to lowest priority):
+        - Keep the most recent user message (the current turn starter)
+        - Keep the last N tool result messages and their paired tool_use (N = recent_tool_results)
+        - Keep the most recent assistant text response
+        Other older messages will be removed first.
+        """
+        if budget_tokens <= 0 or not self.history:
+            return
+
+        sanitized = self.get_sanitized_history()
+
+        # Identify indices to preserve
+        preserve_indices = set()
+
+        # 1) Most recent user message
+        for idx in range(len(sanitized) - 1, -1, -1):
+            if sanitized[idx].get("role") == "user":
+                preserve_indices.add(idx)
+                break
+
+        # 2) Last N tool results and their preceding tool_use messages
+        tool_result_indices = [
+            i for i, m in enumerate(sanitized) if self._is_tool_result_message(m)
+        ]
+        if self.recent_tool_results > 0 and tool_result_indices:
+            for idx in tool_result_indices[-self.recent_tool_results:]:
+                preserve_indices.add(idx)
+                # Pair with preceding assistant tool_use if present
+                prev_idx = idx - 1
+                if prev_idx >= 0:
+                    prev_msg = sanitized[prev_idx]
+                    if prev_msg.get("role") == "assistant" and isinstance(prev_msg.get("content"), list):
+                        preserve_indices.add(prev_idx)
+
+        # 3) Most recent assistant text response
+        for idx in range(len(sanitized) - 1, -1, -1):
+            msg = sanitized[idx]
+            if msg.get("role") == "assistant" and isinstance(msg.get("content"), str):
+                preserve_indices.add(idx)
+                break
+
+        # Build trimmed list by dropping from the oldest side first
+        trimmed: List[dict] = []
+        running_tokens = 0
+        for i, msg in enumerate(sanitized):
+            # Skip early messages until we reach a keep or we are under budget
+            remaining = len(sanitized) - i
+            # Prefer to drop non-preserved early messages
+            if i not in preserve_indices:
+                # Check if we can drop it
+                hypothetical_tokens = running_tokens + self._estimate_tokens([msg])
+                # If already over budget (or close), drop it; otherwise include
+                # We only include non-preserved messages if we have ample room
+                if hypothetical_tokens > budget_tokens:
+                    continue
+
+            trimmed.append(msg)
+            running_tokens = self._estimate_tokens(trimmed)
+
+            # Early stop if we are safely within budget and remaining messages are non-essential
+            if running_tokens >= budget_tokens:
+                break
+
+        # Ensure at least the last message exists
+        if not trimmed and sanitized:
+            trimmed = [sanitized[-1]]
+
+        self.history = trimmed
 
     def _compress_tool_results(self) -> None:
         """Replace older tool results with concise summaries."""

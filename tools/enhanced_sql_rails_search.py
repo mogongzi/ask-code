@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from .base_tool import BaseTool
+from util.sql_log_extractor import AdaptiveSQLExtractor, SQLType
 from .semantic_sql_analyzer import (
     SemanticSQLAnalyzer,
     QueryAnalysis,
@@ -92,15 +93,40 @@ class EnhancedSQLRailsSearch(BaseTool):
             self._debug_output(error_result)
             return error_result
 
-        # Check if this is a transaction log
-        if self._is_transaction_log(sql):
-            error_result = {
-                "error": "Transaction log detected. Use transaction_analyzer tool instead.",
-                "suggestion": "This appears to be a complete transaction log with multiple queries. Use the transaction_analyzer tool to analyze the entire transaction flow and find related source code.",
-                "detected_queries": self._count_queries_in_log(sql)
-            }
-            self._debug_output(error_result)
-            return error_result
+        # Pre-process: normalize SQL from logs if needed
+        extracted_stmt: Optional[str] = None
+        try:
+            extractor = AdaptiveSQLExtractor()
+            extracted = extractor.extract_all_sql(sql)
+            if extracted:
+                # Multiple statements -> likely a transaction log; hand off to transaction analyzer
+                if len(extracted) > 1 or extracted[0].sql_type == SQLType.TRANSACTION:
+                    error_result = {
+                        "error": "Transaction log detected. Use transaction_analyzer tool instead.",
+                        "suggestion": "This appears to be a complete transaction log with multiple queries. Use the transaction_analyzer tool to analyze the entire transaction flow and find related source code.",
+                        "detected_queries": len(extracted)
+                    }
+                    self._debug_output(error_result)
+                    return error_result
+                # Exactly one statement extracted -> normalize input SQL
+                if extracted[0].sql:
+                    extracted_stmt = extracted[0].sql.strip()
+        except Exception as e:
+            # Fall back silently if preprocessing fails
+            self._debug_log("Log preprocessing failed", str(e))
+
+        if extracted_stmt:
+            sql = extracted_stmt
+        else:
+            # Legacy detection for transaction-like logs
+            if self._is_transaction_log(sql):
+                error_result = {
+                    "error": "Transaction log detected. Use transaction_analyzer tool instead.",
+                    "suggestion": "This appears to be a complete transaction log with multiple queries. Use the transaction_analyzer tool to analyze the entire transaction flow and find related source code.",
+                    "detected_queries": self._count_queries_in_log(sql)
+                }
+                self._debug_output(error_result)
+                return error_result
 
         if not self.project_root or not Path(self.project_root).exists():
             error_result = {"error": "Project root not found"}

@@ -27,6 +27,7 @@ from agent.logging import AgentLogger
 from agent_tool_executor import AgentToolExecutor
 
 # Configuration
+# Default fallback; overridden per provider below when available
 MAX_TOKEN_SIZE = 20000
 DEFAULT_URL = "http://127.0.0.1:8000/invoke"
 PROMPT_STYLE = "bold green"
@@ -161,7 +162,11 @@ def repl(
     # Add usage tracking
     from chat.usage_tracker import UsageTracker
 
-    usage = UsageTracker(max_tokens_limit=MAX_TOKEN_SIZE)
+    # Determine provider-specific context length for usage indicator
+    provider_context = getattr(provider, "context_length", None)
+    usage_max_context = int(provider_context) if provider_context else MAX_TOKEN_SIZE
+
+    usage = UsageTracker(max_tokens_limit=usage_max_context)
 
     # Extract provider name
     provider_name = (
@@ -172,7 +177,7 @@ def repl(
     client = create_streaming_client(use_streaming=use_streaming, console=console)
     if verbose:
         client_type = "streaming (SSE)" if use_streaming else "blocking (single request)"
-        console.print(f"[dim]Using {client_type} client[/dim]")
+        console.print(f"[dim]Using {client_type} client (context {usage_max_context} tokens)[/dim]")
 
     # Create session
     session = ChatSession(
