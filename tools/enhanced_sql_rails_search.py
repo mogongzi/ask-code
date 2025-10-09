@@ -21,8 +21,7 @@ from .semantic_sql_analyzer import (
     SemanticSQLAnalyzer,
     QueryAnalysis,
     QueryIntent,
-    create_fingerprint,
-    generate_verification_command
+    create_fingerprint
 )
 
 
@@ -165,10 +164,8 @@ class EnhancedSQLRailsSearch(BaseTool):
         ranked_matches = self._rank_matches(all_matches, analysis)[:max_results]
         self._debug_log("✅ Final ranked matches", len(ranked_matches))
 
-        # Generate verification command
-        verify_cmd = generate_verification_command(analysis)
-
-        result = {
+        # Build full result
+        full_result = {
             "fingerprint": fingerprint,
             "matches": [
                 {
@@ -180,7 +177,6 @@ class EnhancedSQLRailsSearch(BaseTool):
                 }
                 for match in ranked_matches
             ],
-            "verify": verify_cmd,
             "sql_analysis": {
                 "intent": analysis.intent.value,
                 "tables": [t.name for t in analysis.tables],
@@ -192,7 +188,41 @@ class EnhancedSQLRailsSearch(BaseTool):
             }
         }
 
-        self._debug_output(result)
+        self._debug_output(full_result)
+
+        # Return compact or full result based on debug mode
+        if self.debug_enabled:
+            return full_result
+        else:
+            return self._create_compact_result(full_result, ranked_matches)
+
+    def _create_compact_result(self, full_result: Dict[str, Any], ranked_matches: List[SQLMatch]) -> Dict[str, Any]:
+        """Create a compact, user-friendly result for non-verbose mode."""
+        matches_count = len(ranked_matches)
+
+        # Show top 3 matches with truncated snippets
+        compact_matches = []
+        for match in ranked_matches[:3]:
+            snippet = match.snippet
+            if len(snippet) > 80:
+                snippet = snippet[:77] + "..."
+            compact_matches.append({
+                "path": match.path,
+                "line": match.line,
+                "snippet": snippet,
+                "confidence": match.confidence
+            })
+
+        result = {
+            "summary": f"Found {matches_count} match{'es' if matches_count != 1 else ''}",
+            "fingerprint": full_result["fingerprint"],
+            "top_matches": compact_matches
+        }
+
+        # Add a hint if there are more matches
+        if matches_count > 3:
+            result["more_matches"] = f"{matches_count - 3} more match{'es' if matches_count - 3 != 1 else ''} (use --verbose to see all)"
+
         return result
 
     def _parse_sql_query(self, sql: str) -> Dict[str, Any]:
@@ -642,6 +672,7 @@ class EnhancedSQLRailsSearch(BaseTool):
         # Use multiple adaptive search strategies
         strategies = [
             self._strategy_direct_patterns,
+            self._strategy_scope_based,  # New: search for scope definitions and usage
             self._strategy_intent_based,
             self._strategy_association_based,
             self._strategy_validation_based,
@@ -785,7 +816,74 @@ class EnhancedSQLRailsSearch(BaseTool):
                                 match_type="definition"
                             ))
 
+            elif ".take" in pattern:
+                # Search for .take pattern (LIMIT queries)
+                model_pattern = rf"{re.escape(analysis.primary_model)}\..*\.take\b"
+                found = self._search_pattern(model_pattern, "rb")
+                for result in found[:5]:
+                    matches.append(SQLMatch(
+                        path=result["file"],
+                        line=result["line"],
+                        snippet=result["content"],
+                        why=["take pattern match (LIMIT)", f"model: {analysis.primary_model}"],
+                        confidence="high (limit match)",
+                        match_type="definition"
+                    ))
+
         return matches[:10]  # Limit direct matches
+
+    def _strategy_scope_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
+        """Search for scope definitions and usage based on WHERE conditions."""
+        matches = []
+
+        if not analysis.where_conditions:
+            return matches
+
+        # Extract column names from WHERE conditions
+        where_columns = [cond.column.name for cond in analysis.where_conditions]
+
+        # Search for scope definitions in model files that reference these columns
+        for column in where_columns:
+            # Pattern 1: scope :scope_name, -> { where(column: ...) }
+            scope_pattern = rf"scope\s*[:\(]\s*:\w+.*where.*{re.escape(column)}"
+            found = self._search_pattern(scope_pattern, "rb")
+            for result in found[:3]:
+                if analysis.primary_model.lower() in result["file"].lower() or \
+                   analysis.primary_table.name in result["file"].lower():
+                    matches.append(SQLMatch(
+                        path=result["file"],
+                        line=result["line"],
+                        snippet=result["content"],
+                        why=["scope definition", f"filters by {column}"],
+                        confidence="high (scope definition)",
+                        match_type="definition"
+                    ))
+
+            # Pattern 2: Search for scope usage like Model.scope_name(...).take
+            # First find all scopes defined for this model
+            model_file_pattern = analysis.primary_table.name + ".rb"
+            scope_definitions = self._search_pattern(r"scope\s*[:\(]\s*:(\w+)", "rb")
+
+            for scope_def in scope_definitions[:10]:
+                if model_file_pattern in scope_def["file"]:
+                    # Extract scope name
+                    scope_match = re.search(r"scope\s*[:\(]\s*:(\w+)", scope_def["content"])
+                    if scope_match:
+                        scope_name = scope_match.group(1)
+                        # Now search for usage of this scope
+                        usage_pattern = rf"{re.escape(analysis.primary_model)}\.{re.escape(scope_name)}\b"
+                        usage_found = self._search_pattern(usage_pattern, "rb")
+                        for usage in usage_found[:3]:
+                            matches.append(SQLMatch(
+                                path=usage["file"],
+                                line=usage["line"],
+                                snippet=usage["content"],
+                                why=["scope usage", f"calls {scope_name} scope"],
+                                confidence="high (scope usage)",
+                                match_type="definition"
+                            ))
+
+        return matches
 
     def _strategy_intent_based(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Search based on query semantic intent."""
@@ -1273,8 +1371,12 @@ class EnhancedSQLRailsSearch(BaseTool):
                     if len(parts) >= 3:
                         file_path, line_num, content = parts
                         try:
+                            rel_path = self._rel_path(file_path)
+                            # Skip test files - production SQL doesn't come from tests
+                            if self._is_test_file(rel_path):
+                                continue
                             matches.append({
-                                "file": self._rel_path(file_path),
+                                "file": rel_path,
                                 "line": int(line_num),
                                 "content": content.strip()
                             })
@@ -1382,6 +1484,25 @@ class EnhancedSQLRailsSearch(BaseTool):
             return str(Path(file_path).resolve().relative_to(Path(self.project_root).resolve()))
         except Exception:
             return file_path
+
+    def _is_test_file(self, file_path: str) -> bool:
+        """Check if a file is a test file (production SQL doesn't come from tests)."""
+        # Normalize path separators
+        path_lower = file_path.lower().replace('\\', '/')
+
+        # Common test directory patterns
+        test_patterns = [
+            '/test/',
+            '/tests/',
+            '/spec/',
+            '/specs/',
+            '_test.rb',
+            '_spec.rb',
+            'test_helper.rb',
+            'spec_helper.rb'
+        ]
+
+        return any(pattern in path_lower for pattern in test_patterns)
 
     def _is_transaction_log(self, sql: str) -> bool:
         """Check if the input appears to be a transaction log with multiple queries."""

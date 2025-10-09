@@ -90,7 +90,23 @@ class ReactRailsAgent:
 
         try:
             with self.logger.operation("process_message"):
-                self.logger.print_status(f"Analyzing: {user_query}", "working")
+                # Format query based on verbose mode
+                if self.config.debug_enabled:
+                    # Verbose mode: show full query
+                    display_query = user_query
+                else:
+                    # Compact mode: truncate long queries
+                    if len(user_query) > 150:
+                        # For multi-line queries, show first line + truncation
+                        lines = user_query.split('\n')
+                        if len(lines) > 1:
+                            display_query = lines[0][:100] + f"... ({len(lines)} lines total)"
+                        else:
+                            display_query = user_query[:150] + "..."
+                    else:
+                        display_query = user_query
+
+                self.logger.print_status(f"Analyzing: {display_query}", "working")
 
                 # Reset state for new query
                 self.state_machine.reset()

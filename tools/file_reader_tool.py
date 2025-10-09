@@ -223,6 +223,34 @@ class FileReaderTool(BaseTool):
 
         return result
 
+    def create_compact_output(self, full_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a compact preview for non-verbose mode."""
+        if "error" in full_result:
+            return full_result
+
+        total_lines = full_result.get("total_lines", 0)
+        file_path = full_result.get("file_path", "unknown")
+        content = full_result.get("content", "")
+
+        # Split content into lines
+        lines = content.split('\n')
+
+        # Show first 20 lines in compact mode
+        preview_lines = min(20, len(lines))
+        preview = '\n'.join(lines[:preview_lines])
+
+        compact = {
+            "file": file_path,
+            "preview_lines": preview_lines,
+            "total_lines": total_lines,
+            "preview": preview
+        }
+
+        if len(lines) > preview_lines:
+            compact["hint"] = f"Showing first {preview_lines} of {total_lines} lines. Use --verbose to see the full file or specify line_start/line_end parameters."
+
+        return compact
+
     def format_result(self, result: Any) -> str:
         """Format file reading result for LLM consumption."""
         if isinstance(result, str):

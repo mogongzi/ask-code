@@ -37,12 +37,14 @@ class ToolCall:
         id: Unique identifier for this tool call
         name: Name of the tool being called
         input: Input parameters for the tool (as dict)
-        result: Execution result from the tool (empty if not yet executed)
+        result: Execution result from the tool (empty if not yet executed) - full version for LLM
+        display_result: Compact version for UI display (falls back to result if empty)
     """
     id: str
     name: str
     input: Dict
     result: str = ""
+    display_result: str = ""
 
     def to_dict(self) -> dict:
         """Convert to dictionary format for backward compatibility."""

@@ -96,28 +96,35 @@ class ToolExecutionService:
             # Execute the tool
             result_data = self.tool_executor.execute_tool(tool_name, tool_input)
 
-            # Extract result content
+            # Extract result content (full version for LLM)
             result_content = result_data.get('content', '')
+            # Extract display content (compact version for UI)
+            display_content = result_data.get('display', '')
+
             if 'error' in result_data:
                 logger.warning(f"Tool {tool_name} returned error: {result_data['error']}")
                 result_content = f"Error: {result_data['error']}"
+                display_content = result_content  # Same for errors
 
-            # Create ToolCall object
+            # Create ToolCall object with both full and display results
             return ToolCall(
                 id=tool_id,
                 name=tool_name,
                 input=tool_input,
-                result=result_content
+                result=result_content,
+                display_result=display_content
             )
 
         except Exception as e:
             logger.error(f"Failed to execute tool {tool_name}: {e}", exc_info=True)
             # Return ToolCall with error message as result
+            error_msg = f"Tool execution failed: {str(e)}"
             return ToolCall(
                 id=tool_id,
                 name=tool_name,
                 input=tool_input,
-                result=f"Tool execution failed: {str(e)}"
+                result=error_msg,
+                display_result=error_msg  # Same for errors
             )
 
     def has_executor(self) -> bool:

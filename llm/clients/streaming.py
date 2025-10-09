@@ -405,20 +405,22 @@ class StreamingClient(BaseLLMClient):
                                 # Execute the tool
                                 result_data = self.tool_executor.execute_tool(tool_name, tool_input)
 
-                                # Display tool result
+                                # Display tool result (use compact version for UI)
+                                display_text = result_data.get('display', result_data.get('content', ''))
                                 if "error" in result_data:
                                     output_console.print(f"[red]Tool error: {result_data['error']}[/red]")
                                 else:
-                                    output_console.print(f"[green]✓ {result_data['content']}[/green]")
+                                    output_console.print(f"[green]✓ {display_text}[/green]")
 
-                                # Store tool call data
+                                # Store tool call data (full version for conversation)
                                 tool_calls_made.append({
                                     "tool_call": {
                                         "id": tool_id,
                                         "name": tool_name,
                                         "input": tool_input
                                     },
-                                    "result": result_data['content']
+                                    "result": result_data.get('content', ''),
+                                    "display_result": display_text
                                 })
 
                             except json.JSONDecodeError:
@@ -464,7 +466,8 @@ class StreamingClient(BaseLLMClient):
                 id=tc["tool_call"]["id"],
                 name=tc["tool_call"]["name"],
                 input=tc["tool_call"]["input"],
-                result=tc.get("result", "")
+                result=tc.get("result", ""),
+                display_result=tc.get("display_result", "")
             )
             for tc in tool_calls_made
         ]
