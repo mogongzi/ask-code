@@ -127,6 +127,64 @@ class TransactionAnalyzer(BaseTool):
         except Exception as e:
             return {"error": f"Transaction analysis failed: {str(e)}"}
 
+    def create_compact_output(self, full_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a compact summary for non-verbose mode."""
+        if "error" in full_result:
+            return full_result
+
+        query_count = full_result.get("query_count", 0)
+        tables = full_result.get("tables_affected", [])
+        operations = full_result.get("operation_types", [])
+        patterns = full_result.get("transaction_patterns", [])
+        findings = full_result.get("source_code_findings", [])
+
+        # Extract key pattern summaries
+        pattern_summary = []
+        for p in patterns[:3]:  # Top 3 patterns
+            ptype = p.get("pattern_type", "unknown")
+            if ptype == "cascade_insert":
+                pattern_summary.append(f"Cascade: {' → '.join(p.get('sequence', []))}")
+            elif ptype == "read_modify_write":
+                pattern_summary.append(f"Read-modify-write: {p.get('table', 'unknown')}")
+            elif ptype == "bulk_operation":
+                pattern_summary.append(f"Bulk: {p.get('count', 0)}x {p.get('table', 'unknown')}")
+
+        # Extract top source code finding
+        top_finding = None
+        if findings:
+            for f in findings:
+                if f.get("search_strategy") == "transaction_fingerprint":
+                    matches = f.get("search_results", {}).get("matches", [])
+                    if matches:
+                        top_finding = {
+                            "file": matches[0]["file"],
+                            "line": matches[0]["line"],
+                            "confidence": matches[0]["confidence"]
+                        }
+                        break
+
+        compact = {
+            "summary": f"Transaction: {query_count} queries across {len(tables)} tables",
+            "tables": tables[:5] if len(tables) > 5 else tables,
+            "operations": operations,
+            "key_patterns": pattern_summary if pattern_summary else ["No significant patterns detected"],
+        }
+
+        if top_finding:
+            compact["source_code"] = top_finding
+        else:
+            compact["source_code"] = "No source code matches found"
+
+        if len(tables) > 5:
+            compact["more_tables"] = f"...and {len(tables) - 5} more tables"
+
+        if len(patterns) > 3:
+            compact["more_patterns"] = f"...and {len(patterns) - 3} more patterns (use --verbose to see all)"
+
+        compact["hint"] = "Use --verbose to see full analysis with model details, all patterns, and complete visualization"
+
+        return compact
+
     def _parse_transaction_log(self, log: str) -> TransactionFlow:
         """Parse DB logs into structured queries using adaptive pre-processing."""
         extractor = AdaptiveSQLExtractor()

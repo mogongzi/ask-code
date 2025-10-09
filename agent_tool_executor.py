@@ -29,16 +29,27 @@ class AgentToolExecutor:
         # Execute tool with debug logging if debug is enabled
         try:
             if tool.debug_enabled:
-                result = tool.execute_with_debug(parameters or {})
+                full_result = tool.execute_with_debug(parameters or {})
+                # In verbose mode, use full result for both display and LLM
+                compact_result = full_result
             else:
-                result = tool.execute(parameters or {})
+                full_result = tool.execute(parameters or {})
+                # Create compact version for UI display
+                compact_result = tool.create_compact_output(full_result)
         except Exception as e:  # pragma: no cover
-            result = f"Error executing {tool_name}: {e}"
+            full_result = f"Error executing {tool_name}: {e}"
+            compact_result = full_result
 
-        # Normalize to the expected dict shape with 'content'
+        # Format both versions
         try:
-            content = tool.format_result(result)
+            full_content = tool.format_result(full_result)
+            display_content = tool.format_result(compact_result)
         except Exception:
-            content = str(result)
+            full_content = str(full_result)
+            display_content = str(compact_result)
 
-        return {"content": content}
+        # Return both versions: full for LLM context, display for UI
+        return {
+            "content": full_content,  # Full result for LLM conversation
+            "display": display_content  # Compact result for UI display
+        }

@@ -170,10 +170,12 @@ class LLMClient:
                 self.console.print(f"[yellow]⚙ Using {tool_name} tool...[/yellow]")
 
                 if tool_call.result:
-                    result_text = tool_call.result
-                    if isinstance(result_text, str) and result_text:
-                        self.console.print(f"[green]✓ {result_text}[/green]")
-                        tool_results[tool_name] = result_text
+                    # Use display_result for UI if available, otherwise fall back to result
+                    display_text = tool_call.display_result if tool_call.display_result else tool_call.result
+                    if isinstance(display_text, str) and display_text:
+                        self.console.print(f"[green]✓ {display_text}[/green]")
+                    # Store full result for tool_results (for LLM context)
+                    tool_results[tool_name] = tool_call.result
 
                 tool_calls.append(tool_call)
 

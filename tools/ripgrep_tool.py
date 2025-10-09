@@ -165,6 +165,38 @@ class RipgrepTool(BaseTool):
             self._debug_output(error_result)
             return error_result
 
+    def create_compact_output(self, full_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a compact summary for non-verbose mode."""
+        if "error" in full_result or "message" in full_result:
+            return full_result
+
+        matches = full_result.get("matches", [])
+        total = len(matches)
+        pattern = full_result.get("pattern", "")
+
+        # Show top 5 matches
+        top_matches = []
+        for match in matches[:5]:
+            snippet = match.get("content", "")
+            if len(snippet) > 80:
+                snippet = snippet[:77] + "..."
+            top_matches.append({
+                "file": match.get("file", ""),
+                "line": match.get("line", 0),
+                "context": match.get("context", "match"),
+                "snippet": snippet
+            })
+
+        compact = {
+            "summary": f"Found {total} match{'es' if total != 1 else ''} for pattern: {pattern}",
+            "top_matches": top_matches
+        }
+
+        if total > 5:
+            compact["hint"] = f"Showing top 5 of {total} matches. Use --verbose to see all."
+
+        return compact
+
     def _parse_ripgrep_output(self, output: str, max_results: int) -> List[Dict[str, Any]]:
         """
         Parse ripgrep output into structured results.

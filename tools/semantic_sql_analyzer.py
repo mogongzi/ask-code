@@ -43,12 +43,11 @@ class TableReference:
         table = table.split('.')[-1]
         table = table.lower()
 
-        # Basic pluralization rules
+        # Basic pluralization rules - only remove 's' at the end
+        # More complex rules like "ies" -> "y" only apply to the last word component
         if table.endswith("ies"):
             singular = table[:-3] + "y"
-        elif table.endswith("ses"):
-            singular = table[:-2]
-        elif table.endswith("es") and not table.endswith("oses"):
+        elif table.endswith("sses") or table.endswith("xes") or table.endswith("zes") or table.endswith("ches") or table.endswith("shes"):
             singular = table[:-2]
         elif table.endswith("s"):
             singular = table[:-1]
@@ -372,7 +371,12 @@ class SemanticSQLAnalyzer:
                 base_patterns.append(f"{model}.order(...)")
 
             if analysis.has_limit:
-                base_patterns.extend([f"{model}.limit(...)", f"{model}.first", f"{model}.last"])
+                base_patterns.extend([
+                    f"{model}.limit(...)",
+                    f"{model}.first",
+                    f"{model}.last",
+                    f"{model}.take"
+                ])
 
             patterns.extend(base_patterns)
 
@@ -480,43 +484,7 @@ def create_fingerprint(analysis: QueryAnalysis) -> str:
             where_parts.append(f"{condition.column.name} {condition.operator} ?")
         base += f" WHERE {' AND '.join(where_parts)}"
 
+    if analysis.has_limit:
+        base += " LIMIT ?"
+
     return base
-
-
-def generate_verification_command(analysis: QueryAnalysis) -> Optional[str]:
-    """Generate Rails console command to verify the query hypothesis."""
-    if not analysis.primary_model:
-        return None
-
-    model = analysis.primary_model
-
-    if analysis.intent == QueryIntent.EXISTENCE_CHECK:
-        if analysis.where_conditions:
-            condition = analysis.where_conditions[0]
-            col = condition.column.name
-            if condition.column.is_foreign_key:
-                return f"rails runner 'puts {model}.exists?({col}: 1)'"
-            else:
-                return f"rails runner 'puts {model}.exists?({col}: \"test_value\")'"
-        else:
-            return f"rails runner 'puts {model}.exists?'"
-
-    elif analysis.intent == QueryIntent.COUNT_AGGREGATE:
-        if analysis.where_conditions:
-            return f"rails runner 'puts {model}.where({analysis.where_conditions[0].column.name}: \"test\").count'"
-        else:
-            return f"rails runner 'puts {model}.count'"
-
-    elif analysis.intent == QueryIntent.DATA_INSERTION:
-        return f"rails runner 'puts {model}.new.save'"
-
-    elif analysis.intent == QueryIntent.DATA_UPDATE:
-        return f"rails runner 'puts {model}.update_all(updated_at: Time.current)'"
-
-    else:
-        # Default data retrieval
-        if analysis.where_conditions:
-            condition = analysis.where_conditions[0]
-            return f"rails runner 'puts {model}.where({condition.column.name}: \"test\").to_sql'"
-        else:
-            return f"rails runner 'puts {model}.all.to_sql'"

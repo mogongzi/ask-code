@@ -94,6 +94,23 @@ class BaseTool(ABC):
         else:
             return str(result)
 
+    def create_compact_output(self, full_result: Any) -> Any:
+        """
+        Create a compact version of the tool output for non-verbose mode.
+
+        Override this method in subclasses to provide custom compact formatting.
+        By default, returns the full result unchanged.
+
+        Args:
+            full_result: The complete tool result
+
+        Returns:
+            Compact version of the result suitable for non-verbose display
+        """
+        # Default implementation - return full result
+        # Subclasses should override this to provide compact output
+        return full_result
+
     def _debug_log(self, message: str, data: Any = None) -> None:
         """Log debug information if debugging is enabled."""
         if self.debug_enabled:

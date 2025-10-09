@@ -77,6 +77,31 @@ class TestInsertSearchFixes:
         assert fingerprint.startswith("DELETE FROM page_views")
         assert "WHERE id" in fingerprint  # SQLGlot may use "eq" or "="
 
+    def test_data_retrieval_with_limit_fingerprint(self):
+        """Test that DATA_RETRIEVAL queries with LIMIT include it in fingerprint."""
+        sql = "SELECT `custom_domain_tombstones`.* FROM `custom_domain_tombstones` WHERE `custom_domain_tombstones`.`custom_domain` = ? LIMIT ?"
+
+        analysis = self.analyzer.analyze(sql)
+        fingerprint = create_fingerprint(analysis)
+
+        assert analysis.intent == QueryIntent.DATA_RETRIEVAL
+        assert "LIMIT ?" in fingerprint, f"Fingerprint should include LIMIT clause, got: {fingerprint}"
+        # SQLGlot may normalize operators to "eq", "=", etc.
+        assert "SELECT * FROM custom_domain_tombstones WHERE custom_domain" in fingerprint
+        assert "LIMIT ?" in fingerprint
+
+    def test_data_retrieval_without_limit_fingerprint(self):
+        """Test that DATA_RETRIEVAL queries without LIMIT don't include it in fingerprint."""
+        sql = "SELECT `custom_domain_tombstones`.* FROM `custom_domain_tombstones` WHERE `custom_domain_tombstones`.`custom_domain` = ?"
+
+        analysis = self.analyzer.analyze(sql)
+        fingerprint = create_fingerprint(analysis)
+
+        assert analysis.intent == QueryIntent.DATA_RETRIEVAL
+        assert "LIMIT" not in fingerprint, f"Fingerprint should not include LIMIT clause, got: {fingerprint}"
+        # SQLGlot may normalize operators to "eq", "=", etc.
+        assert "SELECT * FROM custom_domain_tombstones WHERE custom_domain" in fingerprint
+
     def test_controller_snake_case_conversion(self):
         """Test controller name conversion fix."""
         from tools.controller_analyzer import ControllerAnalyzer
