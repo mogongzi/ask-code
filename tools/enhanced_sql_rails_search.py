@@ -10,13 +10,15 @@ Uses SQLGlot AST parsing for true semantic understanding.
 from __future__ import annotations
 
 import re
-import subprocess
-from pathlib import Path
+ 
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from .base_tool import BaseTool
 from .components.sql_log_extractor import AdaptiveSQLExtractor, SQLType
+from .components.code_search_engine import CodeSearchEngine
+from .components.result_ranker import ResultRanker
+from .components.rails_pattern_matcher import RailsPatternMatcher
 from .semantic_sql_analyzer import (
     SemanticSQLAnalyzer,
     QueryAnalysis,
@@ -42,6 +44,9 @@ class EnhancedSQLRailsSearch(BaseTool):
     def __init__(self, project_root: Optional[str] = None, debug: bool = False):
         super().__init__(project_root, debug)
         self.analyzer = SemanticSQLAnalyzer()
+        self.search_engine = CodeSearchEngine(project_root=self.project_root, debug_log=self._debug_log)
+        self.ranker = ResultRanker()
+        self.pattern_matcher = RailsPatternMatcher()
 
     @property
     def name(self) -> str:
@@ -161,7 +166,7 @@ class EnhancedSQLRailsSearch(BaseTool):
         # Combine and rank matches
         all_matches = definition_matches + usage_matches
         self._debug_log("🏆 Ranking matches", f"{len(all_matches)} total matches")
-        ranked_matches = self._rank_matches(all_matches, analysis)[:max_results]
+        ranked_matches = self.ranker.rank(all_matches, analysis)[:max_results]
         self._debug_log("✅ Final ranked matches", len(ranked_matches))
 
         # Build full result
@@ -238,7 +243,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
                 # Search for usage in ERB files
                 pattern = rf"{re.escape(ivar_name)}\.each\b"
-                found = self._search_pattern(pattern, "erb")
+                found = self.search_engine.search(pattern, "erb")
                 for result in found:
                     usage_matches.append(SQLMatch(
                         path=result["file"],
@@ -251,7 +256,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
                 # Also search for direct usage
                 pattern = rf"{re.escape(ivar_name)}\b"
-                found = self._search_pattern(pattern, "erb")
+                found = self.search_engine.search(pattern, "erb")
                 for result in found[:3]:  # Limit to avoid noise
                     if "each" not in result["content"]:  # Avoid duplicates
                         usage_matches.append(SQLMatch(
@@ -265,113 +270,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return usage_matches
 
-    def _search_pattern(self, pattern: str, file_ext: str) -> List[Dict[str, Any]]:
-        """Execute ripgrep search for a pattern."""
-        if not self.project_root:
-            self._debug_log("❌ No project root set")
-            return []
-
-        cmd = [
-            "rg", "--line-number", "--with-filename", "-i",
-            "--type-add", f"target:*.{file_ext}",
-            "--type", "target",
-            # Respect .gitignore but don't exclude common code directories
-            # This avoids searching node_modules, tmp, log, etc. while still finding lib/, vendor/
-            pattern,
-            self.project_root
-        ]
-
-        self._debug_log("🔍 Executing ripgrep", {
-            "pattern": pattern,
-            "file_ext": file_ext,
-            "command": " ".join(cmd)
-        })
-
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            matches = []
-
-            if result.returncode in (0, 1):
-                for line in result.stdout.splitlines():
-                    parts = line.split(":", 2)
-                    if len(parts) >= 3:
-                        file_path, line_num, content = parts
-                        try:
-                            rel_path = self._rel_path(file_path)
-                            # Skip test files - production SQL doesn't come from tests
-                            if self._is_test_file(rel_path):
-                                continue
-                            matches.append({
-                                "file": rel_path,
-                                "line": int(line_num),
-                                "content": content.strip()
-                            })
-                        except ValueError:
-                            continue
-
-            self._debug_log("📊 Ripgrep results", {
-                "return_code": result.returncode,
-                "matches_found": len(matches),
-                "stderr": result.stderr[:200] if result.stderr else None
-            })
-
-            return matches
-        except Exception as e:
-            self._debug_log("❌ Ripgrep error", f"{type(e).__name__}: {e}")
-            return []
-
-    def _rank_matches(self, matches: List[SQLMatch], analysis: QueryAnalysis) -> List[SQLMatch]:
-        """Rank matches by confidence and relevance, removing duplicates."""
-        # Remove duplicates based on path and line
-        seen = set()
-        unique_matches = []
-
-        for match in matches:
-            key = (match.path, match.line)
-            if key not in seen:
-                seen.add(key)
-                unique_matches.append(match)
-
-        def confidence_score(match: SQLMatch) -> int:
-            if "high" in match.confidence:
-                return 3
-            elif "medium" in match.confidence:
-                return 2
-            else:
-                return 1
-
-        def type_score(match: SQLMatch) -> int:
-            return 2 if match.match_type == "definition" else 1
-
-        return sorted(unique_matches, key=lambda m: (confidence_score(m), type_score(m)), reverse=True)
-
-    # Legacy verification command generation removed (no external tools)
-
-    def _rel_path(self, file_path: str) -> str:
-        """Convert absolute path to relative path."""
-        try:
-            return str(Path(file_path).resolve().relative_to(Path(self.project_root).resolve()))
-        except Exception:
-            return file_path
-
-    def _is_test_file(self, file_path: str) -> bool:
-        """Check if a file is a test file (production SQL doesn't come from tests)."""
-        # Normalize path separators
-        path_lower = file_path.lower().replace('\\', '/')
-
-        # Common test directory patterns
-        test_patterns = [
-            '/test/',
-            '/tests/',
-            '/spec/',
-            '/specs/',
-            '_test.rb',
-            '_spec.rb',
-            'test_helper.rb',
-            'spec_helper.rb'
-        ]
-
-        return any(pattern in path_lower for pattern in test_patterns)
+    # Code search and ranking helpers moved to components
 
     def _is_transaction_log(self, sql: str) -> bool:
         """Check if the input appears to be a transaction log with multiple queries."""
@@ -438,10 +337,10 @@ class EnhancedSQLRailsSearch(BaseTool):
         """Search for direct Rails patterns inferred from the query."""
         matches = []
 
-        for pattern in analysis.rails_patterns:
+        for pattern in self.pattern_matcher.patterns_for(analysis):
             # Extract searchable terms from pattern
             if ".exists?" in pattern:
-                found = self._search_pattern(r"\.exists\?\b", "rb")
+                found = self.search_engine.search(r"\.exists\?\b", "rb")
                 for result in found:
                     if analysis.primary_model.lower() in result["content"].lower():
                         matches.append(SQLMatch(
@@ -454,7 +353,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                         ))
 
             elif ".count" in pattern:
-                found = self._search_pattern(r"\.count\b", "rb")
+                found = self.search_engine.search(r"\.count\b", "rb")
                 for result in found:
                     if analysis.primary_model.lower() in result["content"].lower():
                         matches.append(SQLMatch(
@@ -469,7 +368,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             elif ".create" in pattern or "create(" in pattern:
                 # Search for Model.create(...) patterns
                 model_pattern = rf"{re.escape(analysis.primary_model)}\.create\b"
-                found = self._search_pattern(model_pattern, "rb")
+                found = self.search_engine.search(model_pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -485,7 +384,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                 # We need to check if .save or .save! appears near the .new call
                 # First, just add all .new matches - they're likely create operations
                 model_pattern = rf"{re.escape(analysis.primary_model)}\.new\b"
-                found = self._search_pattern(model_pattern, "rb")
+                found = self.search_engine.search(model_pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -503,7 +402,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                 if build_match:
                     assoc = build_match.group(1)
                     build_pattern = rf"build_{re.escape(assoc)}\b"
-                    found = self._search_pattern(build_pattern, "rb")
+                    found = self.search_engine.search(build_pattern, "rb")
                     for result in found:
                         matches.append(SQLMatch(
                             path=result["file"],
@@ -516,7 +415,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
             elif ".where" in pattern:
                 model_pattern = rf"{re.escape(analysis.primary_model)}\.where\b"
-                found = self._search_pattern(model_pattern, "rb")
+                found = self.search_engine.search(model_pattern, "rb")
                 for result in found:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -539,7 +438,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                         rf'\.order\(\s*{re.escape(col)}\s*:\s*:desc\)'  # .order(col: :desc)
                     ]
                     for search_pattern in specific_patterns:
-                        found = self._search_pattern(search_pattern, "rb")
+                        found = self.search_engine.search(search_pattern, "rb")
                         for result in found[:3]:  # Limit per pattern
                             if analysis.primary_model.lower() in result["content"].lower():
                                 matches.append(SQLMatch(
@@ -552,7 +451,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                                 ))
                 else:
                     # Generic .order search if we can't extract column
-                    found = self._search_pattern(r"\.order\b", "rb")
+                    found = self.search_engine.search(r"\.order\b", "rb")
                     for result in found[:5]:
                         if analysis.primary_model.lower() in result["content"].lower():
                             matches.append(SQLMatch(
@@ -567,7 +466,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             elif ".take" in pattern:
                 # Search for .take pattern (LIMIT queries)
                 model_pattern = rf"{re.escape(analysis.primary_model)}\..*\.take\b"
-                found = self._search_pattern(model_pattern, "rb")
+                found = self.search_engine.search(model_pattern, "rb")
                 for result in found[:5]:
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -594,7 +493,7 @@ class EnhancedSQLRailsSearch(BaseTool):
         for column in where_columns:
             # Pattern 1: scope :scope_name, -> { where(column: ...) }
             scope_pattern = rf"scope\s*[:\(]\s*:\w+.*where.*{re.escape(column)}"
-            found = self._search_pattern(scope_pattern, "rb")
+            found = self.search_engine.search(scope_pattern, "rb")
             for result in found[:3]:
                 if analysis.primary_model.lower() in result["file"].lower() or \
                    analysis.primary_table.name in result["file"].lower():
@@ -610,7 +509,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             # Pattern 2: Search for scope usage like Model.scope_name(...).take
             # First find all scopes defined for this model
             model_file_pattern = analysis.primary_table.name + ".rb"
-            scope_definitions = self._search_pattern(r"scope\s*[:\(]\s*:(\w+)", "rb")
+            scope_definitions = self.search_engine.search(r"scope\s*[:\(]\s*:(\w+)", "rb")
 
             for scope_def in scope_definitions[:10]:
                 if model_file_pattern in scope_def["file"]:
@@ -620,7 +519,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                         scope_name = scope_match.group(1)
                         # Now search for usage of this scope
                         usage_pattern = rf"{re.escape(analysis.primary_model)}\.{re.escape(scope_name)}\b"
-                        usage_found = self._search_pattern(usage_pattern, "rb")
+                        usage_found = self.search_engine.search(usage_pattern, "rb")
                         for usage in usage_found[:3]:
                             matches.append(SQLMatch(
                                 path=usage["file"],
@@ -641,7 +540,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             # Search for existence patterns
             patterns = [r"\.exists\?\b", r"\.any\?\b", r"\.present\?\b", r"\.empty\?\b"]
             for pattern in patterns:
-                found = self._search_pattern(pattern, "rb")
+                found = self.search_engine.search(pattern, "rb")
                 for result in found[:3]:  # Limit per pattern
                     if any(table.rails_model.lower() in result["content"].lower()
                           for table in analysis.tables):
@@ -657,7 +556,7 @@ class EnhancedSQLRailsSearch(BaseTool):
         elif analysis.intent == QueryIntent.COUNT_AGGREGATE:
             patterns = [r"\.count\b", r"\.size\b", r"\.length\b"]
             for pattern in patterns:
-                found = self._search_pattern(pattern, "rb")
+                found = self.search_engine.search(pattern, "rb")
                 for result in found[:3]:
                     if any(table.rails_model.lower() in result["content"].lower()
                           for table in analysis.tables):
@@ -681,7 +580,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                     (r"\.save!?\b", "save pattern")
                 ]
                 for pattern, description in patterns:
-                    found = self._search_pattern(pattern, "rb")
+                    found = self.search_engine.search(pattern, "rb")
                     for result in found[:5]:  # Limit per pattern
                         # For .save, check if model is mentioned nearby
                         if description == "save pattern":
@@ -714,7 +613,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                     (r"\.save\b", "save after modification")
                 ]
                 for pattern, description in patterns:
-                    found = self._search_pattern(pattern, "rb")
+                    found = self.search_engine.search(pattern, "rb")
                     for result in found[:3]:
                         if model.lower() in result["content"].lower():
                             matches.append(SQLMatch(
@@ -745,7 +644,7 @@ class EnhancedSQLRailsSearch(BaseTool):
                 ]
 
                 for pattern in patterns:
-                    found = self._search_pattern(pattern, "rb")
+                    found = self.search_engine.search(pattern, "rb")
                     for result in found[:2]:  # Limit association matches
                         matches.append(SQLMatch(
                             path=result["file"],
@@ -771,7 +670,7 @@ class EnhancedSQLRailsSearch(BaseTool):
             ]
 
             for pattern in validation_patterns:
-                found = self._search_pattern(pattern, "rb")
+                found = self.search_engine.search(pattern, "rb")
                 for result in found[:2]:  # Limit validation matches
                     matches.append(SQLMatch(
                         path=result["file"],
@@ -796,7 +695,7 @@ class EnhancedSQLRailsSearch(BaseTool):
         ]
 
         for pattern in callback_patterns:
-            found = self._search_pattern(pattern, "rb")
+            found = self.search_engine.search(pattern, "rb")
             for result in found[:2]:  # Limit callback matches
                 if any(table.rails_model.lower() in result["content"].lower()
                       for table in analysis.tables):
