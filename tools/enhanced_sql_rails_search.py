@@ -225,444 +225,232 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return result
 
-    def _parse_sql_query(self, sql: str) -> Dict[str, Any]:
-        """Semantically analyze SQL query to understand intent and structure."""
-        sql_clean = re.sub(r'\s+', ' ', sql.strip())
-        sql_upper = sql_clean.upper()
+    def _find_usage_sites(self, definition_matches: List[SQLMatch]) -> List[SQLMatch]:
+        """Find where the defined queries are actually used/executed."""
+        usage_matches = []
 
-        # Determine query intent
-        intent = self._analyze_query_intent(sql_clean, sql_upper)
+        # Look for instance variable usage in views
+        for def_match in definition_matches:
+            # Extract instance variable name from snippet like "@products = Product.order(:title)"
+            ivar_match = re.search(r'(@\w+)\s*=', def_match.snippet)
+            if ivar_match:
+                ivar_name = ivar_match.group(1)
 
-        # Extract structural components
-        tables = self._extract_tables(sql_upper)
-        columns = self._extract_select_columns(sql_upper)
-        where_info = self._extract_where_conditions(sql_upper, sql_clean)
-        joins = self._extract_joins(sql_upper)
-        subqueries = self._detect_subqueries(sql_clean)
+                # Search for usage in ERB files
+                pattern = rf"{re.escape(ivar_name)}\.each\b"
+                found = self._search_pattern(pattern, "erb")
+                for result in found:
+                    usage_matches.append(SQLMatch(
+                        path=result["file"],
+                        line=result["line"],
+                        snippet=result["content"],
+                        why=["enumerates the relation (executes SELECT)"],
+                        confidence="medium (execution site)",
+                        match_type="usage"
+                    ))
 
-        # Infer Rails patterns
-        models = [self._table_to_model(t) for t in tables if t]
-        rails_patterns = self._infer_rails_patterns(intent, tables, where_info, columns, sql_upper)
+                # Also search for direct usage
+                pattern = rf"{re.escape(ivar_name)}\b"
+                found = self._search_pattern(pattern, "erb")
+                for result in found[:3]:  # Limit to avoid noise
+                    if "each" not in result["content"]:  # Avoid duplicates
+                        usage_matches.append(SQLMatch(
+                            path=result["file"],
+                            line=result["line"],
+                            snippet=result["content"],
+                            why=["references the query result"],
+                            confidence="low (reference)",
+                            match_type="usage"
+                        ))
 
-        return {
-            "original": sql,
-            "intent": intent,
-            "tables": tables,
-            "models": models,
-            "columns": columns,
-            "where_info": where_info,
-            "joins": joins,
-            "subqueries": subqueries,
-            "rails_patterns": rails_patterns,
-            "complexity": self._assess_complexity(sql_upper)
-        }
+        return usage_matches
 
-    def _analyze_query_intent(self, sql_clean: str, sql_upper: str) -> Dict[str, Any]:
-        """Determine the semantic intent of the SQL query."""
-        intent = {
-            "type": "unknown",
-            "purpose": "data_retrieval",
-            "characteristics": []
-        }
-
-        # Existence checks - multiple patterns
-        if (re.search(r'SELECT\s+1\s+AS\s+one.*LIMIT\s+1', sql_upper) or
-            re.search(r'SELECT\s+1\s+AS\s+one.*$', sql_upper) or
-            re.search(r'SELECT\s+1\s+FROM.*LIMIT\s+1', sql_upper)):
-            intent["type"] = "existence_check"
-            intent["purpose"] = "validation"
-            intent["characteristics"].append("boolean_result")
-
-        # Count queries
-        elif re.search(r'SELECT\s+COUNT\s*\(', sql_upper):
-            intent["type"] = "count_query"
-            intent["purpose"] = "aggregation"
-
-        # Data insertion
-        elif sql_upper.startswith('INSERT'):
-            intent["type"] = "data_insertion"
-            intent["purpose"] = "persistence"
-
-        # Data updates
-        elif sql_upper.startswith('UPDATE'):
-            intent["type"] = "data_update"
-            intent["purpose"] = "modification"
-
-        # Transaction markers
-        elif sql_upper in ('BEGIN', 'COMMIT', 'ROLLBACK'):
-            intent["type"] = "transaction_control"
-            intent["purpose"] = "data_integrity"
-
-        # Complex selections
-        else:
-            intent["type"] = "data_selection"
-            if 'ORDER BY' in sql_upper:
-                intent["characteristics"].append("sorted")
-            if 'LIMIT' in sql_upper:
-                intent["characteristics"].append("limited")
-            if 'JOIN' in sql_upper:
-                intent["characteristics"].append("multi_table")
-
-        return intent
-
-    def _extract_tables(self, sql_upper: str) -> List[str]:
-        """Extract all table names from the query."""
-        tables = []
-
-        # FROM clauses
-        from_matches = re.findall(r'FROM\s+["`]?(\w+)["`]?', sql_upper)
-        tables.extend([t.lower() for t in from_matches])
-
-        # INSERT INTO
-        insert_matches = re.findall(r'INSERT\s+INTO\s+["`]?(\w+)["`]?', sql_upper)
-        tables.extend([t.lower() for t in insert_matches])
-
-        # UPDATE
-        update_matches = re.findall(r'UPDATE\s+["`]?(\w+)["`]?', sql_upper)
-        tables.extend([t.lower() for t in update_matches])
-
-        # JOIN clauses
-        join_matches = re.findall(r'JOIN\s+["`]?(\w+)["`]?', sql_upper)
-        tables.extend([t.lower() for t in join_matches])
-
-        return list(dict.fromkeys(tables))  # Remove duplicates, preserve order
-
-    def _extract_select_columns(self, sql_upper: str) -> List[str]:
-        """Extract column information from SELECT clause."""
-        select_match = re.search(r'SELECT\s+(.*?)\s+FROM', sql_upper, re.DOTALL)
-        if not select_match:
+    def _search_pattern(self, pattern: str, file_ext: str) -> List[Dict[str, Any]]:
+        """Execute ripgrep search for a pattern."""
+        if not self.project_root:
+            self._debug_log("❌ No project root set")
             return []
 
-        select_part = select_match.group(1).strip()
+        cmd = [
+            "rg", "--line-number", "--with-filename", "-i",
+            "--type-add", f"target:*.{file_ext}",
+            "--type", "target",
+            # Respect .gitignore but don't exclude common code directories
+            # This avoids searching node_modules, tmp, log, etc. while still finding lib/, vendor/
+            pattern,
+            self.project_root
+        ]
 
-        # Handle special cases
-        if re.search(r'1\s+AS\s+one', select_part):
-            return ["existence_check"]
-        if '*' in select_part:
-            return ["all_columns"]
-        if 'COUNT(' in select_part:
-            return ["count_aggregate"]
+        self._debug_log("🔍 Executing ripgrep", {
+            "pattern": pattern,
+            "file_ext": file_ext,
+            "command": " ".join(cmd)
+        })
 
-        # Extract actual column names
-        columns = []
-        col_matches = re.findall(r'["`]?(\w+)["`]?(?:\s+AS\s+\w+)?', select_part)
-        return [col.lower() for col in col_matches if col.lower() not in ('as', 'distinct')]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            matches = []
 
-    def _extract_where_conditions(self, sql_upper: str, sql_clean: str) -> Dict[str, Any]:
-        """Extract and analyze WHERE clause conditions."""
-        where_match = re.search(r'WHERE\s+(.*?)(?:\s+ORDER|\s+GROUP|\s+LIMIT|$)', sql_upper, re.DOTALL)
-        if not where_match:
-            return {"has_where": False}
+            if result.returncode in (0, 1):
+                for line in result.stdout.splitlines():
+                    parts = line.split(":", 2)
+                    if len(parts) >= 3:
+                        file_path, line_num, content = parts
+                        try:
+                            rel_path = self._rel_path(file_path)
+                            # Skip test files - production SQL doesn't come from tests
+                            if self._is_test_file(rel_path):
+                                continue
+                            matches.append({
+                                "file": rel_path,
+                                "line": int(line_num),
+                                "content": content.strip()
+                            })
+                        except ValueError:
+                            continue
 
-        where_clause = where_match.group(1).strip()
-
-        return {
-            "has_where": True,
-            "raw_clause": where_clause,
-            "columns": self._extract_where_columns(where_clause),
-            "has_parameters": '$' in sql_clean or '?' in sql_clean,
-            "has_subqueries": 'SELECT' in where_clause,
-            "operators": self._extract_operators(where_clause),
-            "is_complex": len(re.findall(r'\b(AND|OR)\b', where_clause)) > 1,
-            "conditions": self._parse_where_conditions(where_clause)
-        }
-
-    def _extract_where_columns(self, where_clause: str) -> List[str]:
-        """Extract column names from WHERE conditions."""
-        # Match patterns like "table"."column" or table.column or just column before operators
-        # Handle quoted identifiers properly
-        col_matches = re.findall(r'["`]?(?:\w+["`]?\s*\.\s*["`]?)?([a-zA-Z_]\w*)["`]?\s*[=<>!]', where_clause)
-        return [col.lower() for col in col_matches if col.lower() not in ('and', 'or')]
-
-    def _extract_order_columns(self, sql_upper: str) -> List[Tuple[str, str]]:
-        """Extract ORDER BY columns and direction."""
-        order_match = re.search(r'ORDER\s+BY\s+(.*?)(?:\s+LIMIT|\s+OFFSET|$)', sql_upper)
-        if not order_match:
-            return []
-
-        order_clause = order_match.group(1).strip()
-        columns = []
-
-        # Parse "column ASC/DESC" patterns, handling multiple columns
-        for part in order_clause.split(','):
-            part = part.strip()
-            # Handle "table"."column" ASC/DESC or just "column" ASC/DESC
-            col_match = re.match(r'["`]?(?:\w+["`]?\s*\.\s*["`]?)?([a-zA-Z_]\w+)["`]?\s*(ASC|DESC)?', part, re.I)
-            if col_match:
-                column = col_match.group(1).lower()
-                direction = (col_match.group(2) or 'ASC').upper()
-                columns.append((column, direction))
-
-        return columns
-
-    def _parse_where_conditions(self, where_clause: str) -> List[Dict[str, str]]:
-        """Parse individual WHERE conditions."""
-        conditions = []
-
-        # Split by AND/OR but keep track of what we split by
-        parts = re.split(r'\s+(AND|OR)\s+', where_clause, flags=re.IGNORECASE)
-
-        for i in range(0, len(parts), 2):  # Skip the AND/OR separators
-            condition_text = parts[i].strip()
-
-            # Parse individual condition like "table"."column" = $1
-            condition_match = re.match(
-                r'["`]?(?:(\w+)["`]?\s*\.\s*)?["`]?(\w+)["`]?\s*([=<>!]+|LIKE|IN)\s*(.+)',
-                condition_text,
-                re.IGNORECASE
-            )
-
-            if condition_match:
-                table, column, operator, value = condition_match.groups()
-                conditions.append({
-                    "table": table.lower() if table else None,
-                    "column": column.lower(),
-                    "operator": operator.upper(),
-                    "value": value.strip(),
-                    "raw": condition_text
-                })
-
-        return conditions
-
-    def _extract_operators(self, where_clause: str) -> List[str]:
-        """Extract comparison operators from WHERE clause."""
-        return re.findall(r'(=|!=|<>|<=|>=|<|>|LIKE|IN|NOT IN|IS NULL|IS NOT NULL)', where_clause)
-
-    def _extract_joins(self, sql_upper: str) -> List[Dict[str, str]]:
-        """Extract JOIN information."""
-        joins = []
-        join_pattern = r'(LEFT\s+JOIN|RIGHT\s+JOIN|INNER\s+JOIN|JOIN)\s+(["`]?\w+["`]?)\s+ON\s+(.*?)(?:\s+(?:LEFT|RIGHT|INNER|JOIN|WHERE|ORDER|GROUP|LIMIT)|$)'
-
-        for match in re.finditer(join_pattern, sql_upper, re.DOTALL):
-            joins.append({
-                "type": match.group(1).strip(),
-                "table": match.group(2).strip().replace('`', '').replace('"', '').lower(),
-                "condition": match.group(3).strip()
+            self._debug_log("📊 Ripgrep results", {
+                "return_code": result.returncode,
+                "matches_found": len(matches),
+                "stderr": result.stderr[:200] if result.stderr else None
             })
 
-        return joins
+            return matches
+        except Exception as e:
+            self._debug_log("❌ Ripgrep error", f"{type(e).__name__}: {e}")
+            return []
 
-    def _detect_subqueries(self, sql_clean: str) -> List[str]:
-        """Detect subqueries in the SQL."""
-        # Simple subquery detection
-        subquery_matches = re.findall(r'\(\s*(SELECT\s+.*?)\s*\)', sql_clean, re.IGNORECASE | re.DOTALL)
-        return subquery_matches
+    def _rank_matches(self, matches: List[SQLMatch], analysis: QueryAnalysis) -> List[SQLMatch]:
+        """Rank matches by confidence and relevance, removing duplicates."""
+        # Remove duplicates based on path and line
+        seen = set()
+        unique_matches = []
 
-    def _infer_rails_patterns(self, intent: Dict, tables: List[str], where_info: Dict, columns: List[str], sql_upper: str) -> List[str]:
-        """Infer likely Rails/ActiveRecord patterns based on SQL analysis."""
-        patterns = []
+        for match in matches:
+            key = (match.path, match.line)
+            if key not in seen:
+                seen.add(key)
+                unique_matches.append(match)
 
-        if not tables:
-            return patterns
-
-        main_table = tables[0]
-        model = self._table_to_model(main_table)
-
-        # Existence checks with detailed condition analysis
-        if intent["type"] == "existence_check":
-            if where_info.get("conditions"):
-                for condition in where_info["conditions"]:
-                    col = condition["column"]
-                    op = condition["operator"]
-
-                    # Direct model existence check
-                    if op == "=":
-                        patterns.extend([
-                            f"{model}.exists?({col}: value)",
-                            f"{model}.where({col}: value).exists?",
-                            f"{model}.find_by({col}: value).present?"
-                        ])
-
-                        # Association patterns for foreign keys
-                        if col.endswith("_id"):
-                            assoc_name = col[:-3]  # Remove "_id"
-                            patterns.extend([
-                                f"@{assoc_name}.{main_table}.exists?",
-                                f"current_{assoc_name}.{main_table}.any?",
-                                f"association.{main_table}.exists?"
-                            ])
-
-                    elif op in ["IN", "NOT IN"]:
-                        patterns.extend([
-                            f"{model}.exists?({col}: [values])",
-                            f"{model}.where({col}: array).exists?"
-                        ])
-
-                    # Validation patterns
-                    if op == "=" and col in ["id", "email", "username", "slug"]:
-                        patterns.extend([
-                            f"validates :field, uniqueness: true  # triggers {model}.exists?({col}: ...)",
-                            f"validate :unique_{col}  # custom validation using exists?"
-                        ])
-
+        def confidence_score(match: SQLMatch) -> int:
+            if "high" in match.confidence:
+                return 3
+            elif "medium" in match.confidence:
+                return 2
             else:
-                patterns.extend([
-                    f"{model}.exists?",
-                    f"{model}.any?",
-                    f"@{main_table}.present?"
-                ])
+                return 1
 
-        # Count queries
-        elif intent["type"] == "count_query":
-            patterns.extend([
-                f"{model}.count",
-                f"{model}.where(...).count",
-                f"association.count",
-                f"association.size"  # Can trigger COUNT
-            ])
+        def type_score(match: SQLMatch) -> int:
+            return 2 if match.match_type == "definition" else 1
 
-        # Data insertion patterns
-        elif intent["type"] == "data_insertion":
-            patterns.extend([
-                f"{model}.create(...)",
-                f"{model}.new(...).save",
-                f"build_{main_table[:-1]}(...)"  # Remove 's' for singular
-            ])
+        return sorted(unique_matches, key=lambda m: (confidence_score(m), type_score(m)), reverse=True)
 
-        # Data update patterns
-        elif intent["type"] == "data_update":
-            patterns.extend([
-                f"{model}.update(...)",
-                f"@{main_table[:-1]}.save",  # Instance save
-                f"{model}.update_all(...)"
-            ])
+    def _generate_verify_command(self, sql_info: Dict[str, Any]) -> Optional[str]:
+        """Generate Rails console command to verify the query."""
+        models = sql_info.get("models", [])
+        if not models:
+            return None
 
-        # Data selection with specific patterns
-        elif intent["type"] == "data_selection":
-            if "all_columns" in columns:
-                if where_info.get("has_where"):
-                    patterns.extend([
-                        f"{model}.where({self._build_where_hash(where_info)})",
-                        f"{model}.find_by({self._build_where_hash(where_info)})",
-                        f"association.where(...)"
-                    ])
-                else:
-                    patterns.extend([f"{model}.all", f"association.all"])
-
-            if "limited" in intent.get("characteristics", []):
-                patterns.extend([f"{model}.limit(...)", f"{model}.first", f"{model}.last"])
-
-            if "sorted" in intent.get("characteristics", []):
-                # Extract actual ORDER BY columns from the SQL
-                order_columns = self._extract_order_columns(sql_upper)
-                if order_columns:
-                    for col, direction in order_columns:
-                        # Generate specific patterns for the actual column
-                        patterns.extend([
-                            f"{model}.order(:{col})",
-                            f"{model}.order('{col}')",
-                            f'{model}.order("{col}")',
-                            f"{model}.order({col}: :asc)" if direction == "ASC" else f"{model}.order({col}: :desc)",
-                            f"{model}.all.order(:{col})",
-                            f"@{main_table[:-1]}.order(:{col})"  # Instance variable pattern
-                        ])
-                else:
-                    # Fallback to generic pattern if ORDER BY parsing fails
-                    patterns.append(f"{model}.order(...)")
-
-        return patterns
-
-    def _build_where_hash(self, where_info: Dict) -> str:
-        """Generate likely ActiveRecord where hash syntax from parsed conditions."""
-        if not where_info.get("conditions"):
-            return "..."
-
-        conditions = where_info["conditions"]
-        if len(conditions) == 1:
-            condition = conditions[0]
-            col = condition["column"]
-            op = condition["operator"]
-
-            if op == "=":
-                return f"{col}: value"
-            elif op in ["IN", "NOT IN"]:
-                return f"{col}: [values]"
-            elif op in ["LIKE"]:
-                return f"{col}: '%pattern%'"
-            else:
-                return f'"{col} {op} ?"'
-        else:
-            # Multiple conditions
-            parts = []
-            for condition in conditions[:2]:  # Limit to 2 for readability
-                col = condition["column"]
-                parts.append(f"{col}: ?")
-            return "{" + ", ".join(parts) + "}"
-
-    def _assess_complexity(self, sql_upper: str) -> str:
-        """Assess the complexity level of the SQL query."""
-        complexity_score = 0
-
-        if 'JOIN' in sql_upper:
-            complexity_score += 2
-        if 'SUBQUERY' in sql_upper or sql_upper.count('SELECT') > 1:
-            complexity_score += 3
-        if len(re.findall(r'\b(AND|OR)\b', sql_upper)) > 2:
-            complexity_score += 2
-        if any(word in sql_upper for word in ['GROUP BY', 'HAVING', 'UNION', 'WITH']):
-            complexity_score += 2
-
-        if complexity_score >= 5:
-            return "high"
-        elif complexity_score >= 2:
-            return "medium"
-        else:
-            return "low"
-
-    def _create_fingerprint(self, sql_info: Dict[str, Any]) -> str:
-        """Create a normalized fingerprint of the SQL query."""
+        model = models[0]
         intent = sql_info.get("intent", {})
-        tables = sql_info.get("tables", [])
-        columns = sql_info.get("columns", [])
         where_info = sql_info.get("where_info", {})
 
-        # Handle existence checks specifically
+        # Generate command based on query intent
         if intent.get("type") == "existence_check":
-            table = tables[0] if tables else "table"
-            base = f"SELECT 1 AS one FROM {table}"
+            if where_info.get("conditions"):
+                condition = where_info["conditions"][0]
+                col = condition["column"]
+                if col.endswith("_id"):
+                    return f"rails runner 'puts {model}.exists?({col}: 1)'"
+                else:
+                    return f"rails runner 'puts {model}.exists?({col}: \"test_value\")'"
+            else:
+                return f"rails runner 'puts {model}.exists?'"
+
+        elif intent.get("type") == "count_query":
+            return f"rails runner 'puts {model}.count'"
+
+        elif intent.get("type") == "data_insertion":
+            return f"rails runner 'puts {model}.new.save'"
+
+        elif intent.get("type") == "data_update":
+            return f"rails runner 'puts {model}.update_all(updated_at: Time.current)'"
+
+        else:
+            # Default data selection
+            base_cmd = model
 
             if where_info.get("conditions"):
-                where_parts = []
-                for condition in where_info["conditions"]:
-                    col = condition["column"]
-                    op = condition["operator"]
-                    where_parts.append(f"{col} {op} ?")
-                base += f" WHERE {' AND '.join(where_parts)}"
-
-            # Add LIMIT for existence checks
-            base += " LIMIT 1"
-            return base
-
-        # Handle other query types
-        parts = []
-        table = tables[0] if tables else "table"
-
-        # SELECT part
-        if "existence_check" in columns:
-            parts.append(f"SELECT 1 AS one FROM {table}")
-        elif "all_columns" in columns:
-            parts.append(f"SELECT {table}.* FROM {table}")
-        elif "count_aggregate" in columns:
-            parts.append(f"SELECT COUNT(*) FROM {table}")
-        elif columns:
-            parts.append(f"SELECT {', '.join(columns)} FROM {table}")
-        else:
-            parts.append(f"SELECT * FROM {table}")
-
-        # WHERE part
-        if where_info.get("conditions"):
-            where_parts = []
-            for condition in where_info["conditions"]:
+                condition = where_info["conditions"][0]
                 col = condition["column"]
-                op = condition["operator"]
-                where_parts.append(f"{col} {op} ?")
-            parts.append(f"WHERE {' AND '.join(where_parts)}")
+                base_cmd += f".where({col}: \"test_value\")"
 
-        # LIMIT part
-        if intent.get("type") == "existence_check":
-            parts.append("LIMIT 1")
+            return f"rails runner 'puts {base_cmd}.to_sql'"
 
-        return " ".join(parts)
+    def _rel_path(self, file_path: str) -> str:
+        """Convert absolute path to relative path."""
+        try:
+            return str(Path(file_path).resolve().relative_to(Path(self.project_root).resolve()))
+        except Exception:
+            return file_path
+
+    def _is_test_file(self, file_path: str) -> bool:
+        """Check if a file is a test file (production SQL doesn't come from tests)."""
+        # Normalize path separators
+        path_lower = file_path.lower().replace('\\', '/')
+
+        # Common test directory patterns
+        test_patterns = [
+            '/test/',
+            '/tests/',
+            '/spec/',
+            '/specs/',
+            '_test.rb',
+            '_spec.rb',
+            'test_helper.rb',
+            'spec_helper.rb'
+        ]
+
+        return any(pattern in path_lower for pattern in test_patterns)
+
+    def _is_transaction_log(self, sql: str) -> bool:
+        """Check if the input appears to be a transaction log with multiple queries."""
+        lines = sql.strip().split('\n')
+
+        # Look for timestamp patterns typical of MySQL general log
+        timestamp_pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+\d+\s+\w+'
+
+        # Count lines that look like log entries
+        log_lines = sum(1 for line in lines if re.match(timestamp_pattern, line.strip()))
+
+        # If we have multiple timestamped entries, it's likely a transaction log
+        if log_lines >= 3:
+            return True
+
+        # Also check for explicit transaction boundaries
+        has_begin = any('BEGIN' in line.upper() for line in lines)
+        has_commit = any('COMMIT' in line.upper() for line in lines)
+        multiple_queries = len([line for line in lines if any(op in line.upper() for op in ['SELECT', 'INSERT', 'UPDATE', 'DELETE'])]) >= 3
+
+        return has_begin and has_commit and multiple_queries
+
+    def _count_queries_in_log(self, sql: str) -> int:
+        """Count the number of SQL queries in a transaction log."""
+        lines = sql.strip().split('\n')
+        query_count = 0
+
+        for line in lines:
+            line_clean = line.strip()
+            # Skip empty lines
+            if not line_clean:
+                continue
+
+            # Look for SQL operations anywhere in the line (after timestamp)
+            line_upper = line_clean.upper()
+            if any(op in line_upper for op in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'BEGIN', 'COMMIT']):
+                query_count += 1
+
+        return query_count
 
     def _find_definition_sites_semantic(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Intelligently search for Rails code using semantic analysis and adaptive strategies."""
@@ -1298,247 +1086,3 @@ class EnhancedSQLRailsSearch(BaseTool):
                     ))
 
         return matches
-
-    def _find_usage_sites(self, definition_matches: List[SQLMatch]) -> List[SQLMatch]:
-        """Find where the defined queries are actually used/executed."""
-        usage_matches = []
-
-        # Look for instance variable usage in views
-        for def_match in definition_matches:
-            # Extract instance variable name from snippet like "@products = Product.order(:title)"
-            ivar_match = re.search(r'(@\w+)\s*=', def_match.snippet)
-            if ivar_match:
-                ivar_name = ivar_match.group(1)
-
-                # Search for usage in ERB files
-                pattern = rf"{re.escape(ivar_name)}\.each\b"
-                found = self._search_pattern(pattern, "erb")
-                for result in found:
-                    usage_matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["enumerates the relation (executes SELECT)"],
-                        confidence="medium (execution site)",
-                        match_type="usage"
-                    ))
-
-                # Also search for direct usage
-                pattern = rf"{re.escape(ivar_name)}\b"
-                found = self._search_pattern(pattern, "erb")
-                for result in found[:3]:  # Limit to avoid noise
-                    if "each" not in result["content"]:  # Avoid duplicates
-                        usage_matches.append(SQLMatch(
-                            path=result["file"],
-                            line=result["line"],
-                            snippet=result["content"],
-                            why=["references the query result"],
-                            confidence="low (reference)",
-                            match_type="usage"
-                        ))
-
-        return usage_matches
-
-    def _search_pattern(self, pattern: str, file_ext: str) -> List[Dict[str, Any]]:
-        """Execute ripgrep search for a pattern."""
-        if not self.project_root:
-            self._debug_log("❌ No project root set")
-            return []
-
-        cmd = [
-            "rg", "--line-number", "--with-filename", "-i",
-            "--type-add", f"target:*.{file_ext}",
-            "--type", "target",
-            # Respect .gitignore but don't exclude common code directories
-            # This avoids searching node_modules, tmp, log, etc. while still finding lib/, vendor/
-            pattern,
-            self.project_root
-        ]
-
-        self._debug_log("🔍 Executing ripgrep", {
-            "pattern": pattern,
-            "file_ext": file_ext,
-            "command": " ".join(cmd)
-        })
-
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-            matches = []
-
-            if result.returncode in (0, 1):
-                for line in result.stdout.splitlines():
-                    parts = line.split(":", 2)
-                    if len(parts) >= 3:
-                        file_path, line_num, content = parts
-                        try:
-                            rel_path = self._rel_path(file_path)
-                            # Skip test files - production SQL doesn't come from tests
-                            if self._is_test_file(rel_path):
-                                continue
-                            matches.append({
-                                "file": rel_path,
-                                "line": int(line_num),
-                                "content": content.strip()
-                            })
-                        except ValueError:
-                            continue
-
-            self._debug_log("📊 Ripgrep results", {
-                "return_code": result.returncode,
-                "matches_found": len(matches),
-                "stderr": result.stderr[:200] if result.stderr else None
-            })
-
-            return matches
-        except Exception as e:
-            self._debug_log("❌ Ripgrep error", f"{type(e).__name__}: {e}")
-            return []
-
-    def _rank_matches(self, matches: List[SQLMatch], analysis: QueryAnalysis) -> List[SQLMatch]:
-        """Rank matches by confidence and relevance, removing duplicates."""
-        # Remove duplicates based on path and line
-        seen = set()
-        unique_matches = []
-
-        for match in matches:
-            key = (match.path, match.line)
-            if key not in seen:
-                seen.add(key)
-                unique_matches.append(match)
-
-        def confidence_score(match: SQLMatch) -> int:
-            if "high" in match.confidence:
-                return 3
-            elif "medium" in match.confidence:
-                return 2
-            else:
-                return 1
-
-        def type_score(match: SQLMatch) -> int:
-            return 2 if match.match_type == "definition" else 1
-
-        return sorted(unique_matches, key=lambda m: (confidence_score(m), type_score(m)), reverse=True)
-
-    def _generate_verify_command(self, sql_info: Dict[str, Any]) -> Optional[str]:
-        """Generate Rails console command to verify the query."""
-        models = sql_info.get("models", [])
-        if not models:
-            return None
-
-        model = models[0]
-        intent = sql_info.get("intent", {})
-        where_info = sql_info.get("where_info", {})
-
-        # Generate command based on query intent
-        if intent.get("type") == "existence_check":
-            if where_info.get("conditions"):
-                condition = where_info["conditions"][0]
-                col = condition["column"]
-                if col.endswith("_id"):
-                    return f"rails runner 'puts {model}.exists?({col}: 1)'"
-                else:
-                    return f"rails runner 'puts {model}.exists?({col}: \"test_value\")'"
-            else:
-                return f"rails runner 'puts {model}.exists?'"
-
-        elif intent.get("type") == "count_query":
-            return f"rails runner 'puts {model}.count'"
-
-        elif intent.get("type") == "data_insertion":
-            return f"rails runner 'puts {model}.new.save'"
-
-        elif intent.get("type") == "data_update":
-            return f"rails runner 'puts {model}.update_all(updated_at: Time.current)'"
-
-        else:
-            # Default data selection
-            base_cmd = model
-
-            if where_info.get("conditions"):
-                condition = where_info["conditions"][0]
-                col = condition["column"]
-                base_cmd += f".where({col}: \"test_value\")"
-
-            return f"rails runner 'puts {base_cmd}.to_sql'"
-
-    def _table_to_model(self, table: str) -> str:
-        """Convert table name to Rails model name."""
-        # Basic singularization and capitalization
-        table = table.lower()
-        if table.endswith("ies"):
-            singular = table[:-3] + "y"
-        elif table.endswith("ses"):
-            singular = table[:-2]
-        elif table.endswith("es") and not table.endswith("oses"):
-            singular = table[:-2]
-        elif table.endswith("s"):
-            singular = table[:-1]
-        else:
-            singular = table
-
-        return "".join(word.capitalize() for word in singular.split("_"))
-
-    def _rel_path(self, file_path: str) -> str:
-        """Convert absolute path to relative path."""
-        try:
-            return str(Path(file_path).resolve().relative_to(Path(self.project_root).resolve()))
-        except Exception:
-            return file_path
-
-    def _is_test_file(self, file_path: str) -> bool:
-        """Check if a file is a test file (production SQL doesn't come from tests)."""
-        # Normalize path separators
-        path_lower = file_path.lower().replace('\\', '/')
-
-        # Common test directory patterns
-        test_patterns = [
-            '/test/',
-            '/tests/',
-            '/spec/',
-            '/specs/',
-            '_test.rb',
-            '_spec.rb',
-            'test_helper.rb',
-            'spec_helper.rb'
-        ]
-
-        return any(pattern in path_lower for pattern in test_patterns)
-
-    def _is_transaction_log(self, sql: str) -> bool:
-        """Check if the input appears to be a transaction log with multiple queries."""
-        lines = sql.strip().split('\n')
-
-        # Look for timestamp patterns typical of MySQL general log
-        timestamp_pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+\d+\s+\w+'
-
-        # Count lines that look like log entries
-        log_lines = sum(1 for line in lines if re.match(timestamp_pattern, line.strip()))
-
-        # If we have multiple timestamped entries, it's likely a transaction log
-        if log_lines >= 3:
-            return True
-
-        # Also check for explicit transaction boundaries
-        has_begin = any('BEGIN' in line.upper() for line in lines)
-        has_commit = any('COMMIT' in line.upper() for line in lines)
-        multiple_queries = len([line for line in lines if any(op in line.upper() for op in ['SELECT', 'INSERT', 'UPDATE', 'DELETE'])]) >= 3
-
-        return has_begin and has_commit and multiple_queries
-
-    def _count_queries_in_log(self, sql: str) -> int:
-        """Count the number of SQL queries in a transaction log."""
-        lines = sql.strip().split('\n')
-        query_count = 0
-
-        for line in lines:
-            line_clean = line.strip()
-            # Skip empty lines
-            if not line_clean:
-                continue
-
-            # Look for SQL operations anywhere in the line (after timestamp)
-            line_upper = line_clean.upper()
-            if any(op in line_upper for op in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'BEGIN', 'COMMIT']):
-                query_count += 1
-
-        return query_count

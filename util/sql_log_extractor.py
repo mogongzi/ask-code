@@ -13,7 +13,7 @@ import re
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Set
-from collections import Counter, defaultdict
+from collections import Counter
 
 
 class Confidence(Enum):
