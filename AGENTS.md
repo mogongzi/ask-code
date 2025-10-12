@@ -4,7 +4,7 @@
 `ride_rails.py` drives the CLI and ReAct loop; supporting agent wiring lives in `agent/` and `agent_tool_executor.py`. Shared state management sits in `chat/`, provider adapters in `providers/`, prompts in `prompts/`, and rendering helpers in `render/`. Place reusable utilities under `util/`, while analysis tools reside in `tools/` and extend `tools.base_tool.BaseTool`. Keep documentation that is not this guide inside `journal/` using the `YYYY-MM-DD_TOPIC.md` pattern. Tests belong exclusively in `tests/` alongside fixtures and helpers.
 
 ### SQL Log Pre‑Processing (Adaptive Extractor)
-- `util/sql_log_extractor.py` provides an adaptive extractor that normalizes SQL from heterogeneous DB logs (MySQL general log, multi‑line statements, header‑only entries like `... Query\nSELECT ...`).
+- `tools/components/sql_log_extractor.py` provides an adaptive extractor that normalizes SQL from heterogeneous DB logs (MySQL general log, multi‑line statements, header‑only entries like `... Query\nSELECT ...`).
 - It detects transaction boundaries (`BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`), accumulates multi‑line statements, strips comments for typing, and preserves metadata.
 - Downstream tools consume the normalized SQL to improve robustness and accuracy.
 

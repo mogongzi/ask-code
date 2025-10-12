@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from .base_tool import BaseTool
-from util.sql_log_extractor import AdaptiveSQLExtractor, SQLType
+from .components.sql_log_extractor import AdaptiveSQLExtractor, SQLType
 from .semantic_sql_analyzer import (
     SemanticSQLAnalyzer,
     QueryAnalysis,
@@ -345,47 +345,7 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return sorted(unique_matches, key=lambda m: (confidence_score(m), type_score(m)), reverse=True)
 
-    def _generate_verify_command(self, sql_info: Dict[str, Any]) -> Optional[str]:
-        """Generate Rails console command to verify the query."""
-        models = sql_info.get("models", [])
-        if not models:
-            return None
-
-        model = models[0]
-        intent = sql_info.get("intent", {})
-        where_info = sql_info.get("where_info", {})
-
-        # Generate command based on query intent
-        if intent.get("type") == "existence_check":
-            if where_info.get("conditions"):
-                condition = where_info["conditions"][0]
-                col = condition["column"]
-                if col.endswith("_id"):
-                    return f"rails runner 'puts {model}.exists?({col}: 1)'"
-                else:
-                    return f"rails runner 'puts {model}.exists?({col}: \"test_value\")'"
-            else:
-                return f"rails runner 'puts {model}.exists?'"
-
-        elif intent.get("type") == "count_query":
-            return f"rails runner 'puts {model}.count'"
-
-        elif intent.get("type") == "data_insertion":
-            return f"rails runner 'puts {model}.new.save'"
-
-        elif intent.get("type") == "data_update":
-            return f"rails runner 'puts {model}.update_all(updated_at: Time.current)'"
-
-        else:
-            # Default data selection
-            base_cmd = model
-
-            if where_info.get("conditions"):
-                condition = where_info["conditions"][0]
-                col = condition["column"]
-                base_cmd += f".where({col}: \"test_value\")"
-
-            return f"rails runner 'puts {base_cmd}.to_sql'"
+    # Legacy verification command generation removed (no external tools)
 
     def _rel_path(self, file_path: str) -> str:
         """Convert absolute path to relative path."""
@@ -851,238 +811,16 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         return matches
 
-    def _search_rails_pattern(self, pattern_desc: str, sql_info: Dict) -> List[SQLMatch]:
-        """Search for specific Rails patterns."""
-        matches = []
+    # Legacy search helpers removed (replaced by semantic strategies)
 
-        # Extract searchable terms from pattern description
-        if "exists?" in pattern_desc:
-            # Search for .exists? usage
-            found = self._search_pattern(r"\.exists\?", "rb")
-            for result in found:
-                if any(model.lower() in result["content"].lower() for model in sql_info.get("models", [])):
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["existence check pattern", "matches .exists? usage"],
-                        confidence="high (semantic match)",
-                        match_type="definition"
-                    ))
+    # Legacy search helpers removed (existence patterns)
 
-        elif "count" in pattern_desc:
-            # Search for .count usage
-            found = self._search_pattern(r"\.count\b", "rb")
-            for result in found:
-                if any(model.lower() in result["content"].lower() for model in sql_info.get("models", [])):
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["count aggregation", "matches .count usage"],
-                        confidence="high (semantic match)",
-                        match_type="definition"
-                    ))
+    # Legacy search helpers removed (count patterns)
 
-        elif "where" in pattern_desc:
-            # Search for .where usage with the model
-            for model in sql_info.get("models", []):
-                pattern = rf"{re.escape(model)}\.where"
-                found = self._search_pattern(pattern, "rb")
-                for result in found:
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["where condition", f"{model} filtering"],
-                        confidence="high (model match)",
-                        match_type="definition"
-                    ))
+    # Legacy search helpers removed (insertion patterns)
 
-        return matches
+    # Legacy search helpers removed (update patterns)
 
-    def _search_existence_patterns(self, sql_info: Dict) -> List[SQLMatch]:
-        """Search for patterns that generate existence check queries."""
-        matches = []
+    # Legacy search helpers removed (association patterns)
 
-        for model in sql_info.get("models", []):
-            # Pattern 1: Direct exists? calls
-            patterns = [
-                rf"{re.escape(model)}\.exists\?",
-                rf"\.exists\?\s*$",  # End of line exists?
-                rf"if\s+.*\.exists\?",  # Conditional exists?
-                rf"unless\s+.*\.exists\?",  # Unless exists?
-            ]
-
-            for pattern in patterns:
-                found = self._search_pattern(pattern, "rb")
-                for result in found:
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["existence check", "boolean validation"],
-                        confidence="high (existence pattern)",
-                        match_type="definition"
-                    ))
-
-            # Pattern 2: Validation methods that might use exists?
-            validation_patterns = [
-                rf"validates.*uniqueness",
-                rf"validate\s+:.*{model.lower()}",
-                rf"before_.*\s+.*{model.lower()}"
-            ]
-
-            for pattern in validation_patterns:
-                found = self._search_pattern(pattern, "rb")
-                for result in found:
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["validation logic", "may trigger existence check"],
-                        confidence="medium (validation)",
-                        match_type="definition"
-                    ))
-
-        return matches
-
-    def _search_count_patterns(self, sql_info: Dict) -> List[SQLMatch]:
-        """Search for patterns that generate count queries."""
-        matches = []
-
-        for model in sql_info.get("models", []):
-            patterns = [
-                rf"{re.escape(model)}\.count",
-                rf"\.count\s*$",
-                rf"\.size\b",  # .size can trigger count
-                rf"\.length\b"  # .length can trigger count
-            ]
-
-            for pattern in patterns:
-                found = self._search_pattern(pattern, "rb")
-                for result in found:
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["count/size operation"],
-                        confidence="high (aggregation)",
-                        match_type="definition"
-                    ))
-
-        return matches
-
-    def _search_insertion_patterns(self, sql_info: Dict) -> List[SQLMatch]:
-        """Search for patterns that generate INSERT queries."""
-        matches = []
-
-        for model in sql_info.get("models", []):
-            patterns = [
-                rf"{re.escape(model)}\.create",
-                rf"{re.escape(model)}\.new.*\.save",
-                rf"\.create!",
-                rf"build_.*{model.lower()}",
-                rf"{model.lower()}\.build"
-            ]
-
-            for pattern in patterns:
-                found = self._search_pattern(pattern, "rb")
-                for result in found:
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["record creation", "INSERT operation"],
-                        confidence="high (creation pattern)",
-                        match_type="definition"
-                    ))
-
-        return matches
-
-    def _search_update_patterns(self, sql_info: Dict) -> List[SQLMatch]:
-        """Search for patterns that generate UPDATE queries."""
-        matches = []
-
-        for model in sql_info.get("models", []):
-            patterns = [
-                rf"{re.escape(model)}\.update",
-                rf"\.update!",
-                rf"\.update_attribute",
-                rf"\.save\b",
-                rf"\.save!"
-            ]
-
-            for pattern in patterns:
-                found = self._search_pattern(pattern, "rb")
-                for result in found:
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["record update", "UPDATE operation"],
-                        confidence="high (update pattern)",
-                        match_type="definition"
-                    ))
-
-        return matches
-
-    def _search_association_patterns(self, sql_info: Dict) -> List[SQLMatch]:
-        """Search for association-based patterns that might generate the query."""
-        matches = []
-
-        # Look for foreign key relationships in WHERE clauses
-        where_info = sql_info.get("where_info", {})
-        if where_info.get("columns"):
-            for column in where_info["columns"]:
-                if column.endswith("_id"):
-                    # This might be a foreign key - search for association usage
-                    base_name = column[:-3]  # Remove "_id"
-
-                    patterns = [
-                        rf"\.{base_name}\b",  # belongs_to association
-                        rf"\.{base_name}s\b",  # has_many association
-                        rf"through.*{base_name}",  # has_many through
-                        rf"includes.*{base_name}"  # eager loading
-                    ]
-
-                    for pattern in patterns:
-                        found = self._search_pattern(pattern, "rb")
-                        for result in found[:3]:  # Limit results
-                            matches.append(SQLMatch(
-                                path=result["file"],
-                                line=result["line"],
-                                snippet=result["content"],
-                                why=["association access", f"foreign key: {column}"],
-                                confidence="medium (association)",
-                                match_type="definition"
-                            ))
-
-        return matches
-
-    def _search_callback_patterns(self, sql_info: Dict) -> List[SQLMatch]:
-        """Search for callbacks that might trigger the query."""
-        matches = []
-
-        for model in sql_info.get("models", []):
-            callback_patterns = [
-                rf"after_create.*{model.lower()}",
-                rf"before_save.*{model.lower()}",
-                rf"after_commit",
-                rf"after_update.*{model.lower()}",
-                rf"validate.*{model.lower()}"
-            ]
-
-            for pattern in callback_patterns:
-                found = self._search_pattern(pattern, "rb")
-                for result in found[:2]:  # Limit callback matches
-                    matches.append(SQLMatch(
-                        path=result["file"],
-                        line=result["line"],
-                        snippet=result["content"],
-                        why=["callback execution", "indirect query trigger"],
-                        confidence="low (callback)",
-                        match_type="definition"
-                    ))
-
-        return matches
+    # Legacy search helpers removed (callback patterns)

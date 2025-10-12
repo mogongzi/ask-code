@@ -11,6 +11,7 @@ from sqlglot import exp
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+from .components.rails_naming import table_to_model
 
 
 class QueryIntent(Enum):
@@ -35,27 +36,11 @@ class TableReference:
     @property
     def rails_model(self) -> str:
         """Convert table name to Rails model name."""
-        return self._table_to_model(self.name)
+        return table_to_model(self.name)
 
     def _table_to_model(self, table: str) -> str:
-        """Convert table name to Rails model name using proper pluralization."""
-        # Remove any schema prefix
-        table = table.split('.')[-1]
-        table = table.lower()
-
-        # Basic pluralization rules - only remove 's' at the end
-        # More complex rules like "ies" -> "y" only apply to the last word component
-        if table.endswith("ies"):
-            singular = table[:-3] + "y"
-        elif table.endswith("sses") or table.endswith("xes") or table.endswith("zes") or table.endswith("ches") or table.endswith("shes"):
-            singular = table[:-2]
-        elif table.endswith("s"):
-            singular = table[:-1]
-        else:
-            singular = table
-
-        # Convert to CamelCase
-        return "".join(word.capitalize() for word in singular.split("_"))
+        """Deprecated: use table_to_model from components. Kept for compatibility."""
+        return table_to_model(table)
 
 
 @dataclass
@@ -274,7 +259,7 @@ class SemanticSQLAnalyzer:
         elif isinstance(parsed, exp.Transaction):
             analysis.intent = QueryIntent.TRANSACTION_CONTROL
         # Handle transaction control statements - check raw SQL first
-        elif sql.strip().upper().startswith(('BEGIN', 'COMMIT', 'ROLLBACK')):
+        elif analysis.raw_sql.strip().upper().startswith(('BEGIN', 'COMMIT', 'ROLLBACK')):
             analysis.intent = QueryIntent.TRANSACTION_CONTROL
 
     def _assess_complexity(self, parsed: exp.Expression, analysis: QueryAnalysis) -> None:
