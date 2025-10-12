@@ -1,4 +1,4 @@
-from util.sql_log_extractor import AdaptiveSQLExtractor, SQLType
+from tools.components.sql_log_extractor import AdaptiveSQLExtractor, SQLType
 
 
 SAMPLE_LOG = """

@@ -14,7 +14,9 @@ from dataclasses import dataclass
 
 from .base_tool import BaseTool
 from .enhanced_sql_rails_search import EnhancedSQLRailsSearch
-from util.sql_log_extractor import AdaptiveSQLExtractor, SQLType, ExtractedSQL
+from .components.sql_log_extractor import AdaptiveSQLExtractor, SQLType, ExtractedSQL
+from .semantic_sql_analyzer import SemanticSQLAnalyzer, QueryIntent
+from .components.rails_naming import table_to_model
 from .model_analyzer import ModelAnalyzer
 
 
@@ -226,12 +228,46 @@ class TransactionAnalyzer(BaseTool):
                 queries.append(current)
         else:
             # Convert extracted statements into SQLQuery entries
+            analyzer = SemanticSQLAnalyzer()
             for stmt in extracted:
                 # If a transaction block was extracted as a single statement, split into sub-statements
                 parts = self._split_block_into_statements(stmt.sql) if stmt.sql_type == SQLType.TRANSACTION else [stmt.sql]
                 for idx, part in enumerate(parts):
+                    # Prefer AST analysis to determine operation and table; fall back to regex
+                    analysis = None
+                    try:
+                        analysis = analyzer.analyze(part)
+                    except Exception:
+                        analysis = None
+
+                    # Determine operation from intent or raw SQL
                     op = self._extract_operation(part)
-                    table = self._extract_table(part, op)
+                    if analysis:
+                        if analysis.intent == QueryIntent.DATA_INSERTION:
+                            op = 'INSERT'
+                        elif analysis.intent == QueryIntent.DATA_UPDATE:
+                            op = 'UPDATE'
+                        elif analysis.intent == QueryIntent.DATA_DELETION:
+                            op = 'DELETE'
+                        elif analysis.intent in (QueryIntent.EXISTENCE_CHECK, QueryIntent.COUNT_AGGREGATE, QueryIntent.DATA_RETRIEVAL):
+                            op = 'SELECT'
+                        elif analysis.intent == QueryIntent.TRANSACTION_CONTROL:
+                            # refine via raw SQL
+                            part_upper = part.strip().upper()
+                            if part_upper.startswith('BEGIN') or part_upper.startswith('START TRANSACTION'):
+                                op = 'BEGIN'
+                            elif part_upper.startswith('COMMIT'):
+                                op = 'COMMIT'
+                            elif part_upper.startswith('ROLLBACK'):
+                                op = 'ROLLBACK'
+
+                    # Determine table from analysis if available
+                    table = None
+                    if analysis and analysis.primary_table:
+                        table = analysis.primary_table.name
+                    else:
+                        table = self._extract_table(part, op)
+
                     timestamp = self._parse_timestamp_from_metadata(stmt.metadata_removed) or ""
                     queries.append(SQLQuery(
                         timestamp=timestamp,
@@ -591,23 +627,8 @@ class TransactionAnalyzer(BaseTool):
         return model_analysis
 
     def _table_to_model_name(self, table_name: str) -> str:
-        """Convert table name to Rails model name."""
-        if not table_name:
-            return ""
-
-        # Handle common Rails pluralizations
-        singular = table_name
-        if table_name.endswith("ies"):
-            singular = table_name[:-3] + "y"
-        elif table_name.endswith("ses"):
-            singular = table_name[:-2]
-        elif table_name.endswith("es") and not table_name.endswith("ses"):
-            singular = table_name[:-2]
-        elif table_name.endswith("s"):
-            singular = table_name[:-1]
-
-        # Convert to PascalCase
-        return "".join(word.capitalize() for word in singular.split("_"))
+        """Convert table name to Rails model name using shared helper."""
+        return table_to_model(table_name)
 
     def _extract_relevant_callbacks(self, model_result: Dict[str, Any]) -> List[str]:
         """Extract callbacks that might be relevant to transaction analysis."""
