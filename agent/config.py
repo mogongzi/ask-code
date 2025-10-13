@@ -29,8 +29,6 @@ class AgentConfig:
     # LLM configuration
     max_tokens: Optional[int] = None
     timeout: float = 30.0
-    max_history_tokens: int = 10000
-    recent_tool_result_messages: int = 2
 
     # Response analysis settings
     finalization_threshold: int = 2  # Steps before forcing finalization
@@ -82,12 +80,6 @@ class AgentConfig:
         if not self.allowed_tools:
             raise ValueError("allowed_tools cannot be empty")
 
-        if self.max_history_tokens <= 0:
-            raise ValueError("max_history_tokens must be positive")
-
-        if self.recent_tool_result_messages <= 0:
-            raise ValueError("recent_tool_result_messages must be positive")
-
     @classmethod
     def create_default(cls) -> AgentConfig:
         """Create a default configuration instance."""
@@ -124,8 +116,6 @@ class AgentConfig:
             'tool_repetition_limit': self.tool_repetition_limit,
             'debug_enabled': self.debug_enabled,
             'log_level': self.log_level,
-            'max_history_tokens': self.max_history_tokens,
-            'recent_tool_result_messages': self.recent_tool_result_messages,
         }
 
         # Update with provided values
@@ -145,6 +135,4 @@ class AgentConfig:
             'tool_repetition_limit': self.tool_repetition_limit,
             'debug_enabled': self.debug_enabled,
             'log_level': self.log_level,
-            'max_history_tokens': self.max_history_tokens,
-            'recent_tool_result_messages': self.recent_tool_result_messages,
         }
