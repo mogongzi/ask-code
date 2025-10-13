@@ -62,6 +62,7 @@ class LLMResponse:
     tool_calls: List[dict]
     tokens: int = 0
     cost: float = 0.0
+    error: Optional[str] = None
 
 
 class LLMClient:
@@ -182,6 +183,7 @@ class LLMClient:
             tool_calls=tool_calls,
             tokens=getattr(result, "tokens", 0),
             cost=getattr(result, "cost", 0.0),
+            error=getattr(result, "error", None),
         )
 
     def _should_apply_prompt_caching(self) -> bool:
@@ -306,6 +308,7 @@ Input: {"pattern": "SELECT|WHERE|FROM", "file_types": ["rb", "erb"]}
             tools_used=[],
             tool_results={},
             tool_calls=[],
+            error=error_message,
         )
 
     def format_tool_messages(self, tool_calls_made: List[dict]) -> List[dict]:

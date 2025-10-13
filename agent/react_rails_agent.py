@@ -156,6 +156,15 @@ class ReactRailsAgent:
                     # Get LLM response with tool execution
                     llm_response = self._call_llm_with_tools(messages)
 
+                    # Check for API errors - stop immediately without retry
+                    if llm_response.error:
+                        self.logger.error(
+                            f"API error in step {step_num}: {llm_response.error}",
+                            {"error": llm_response.error}
+                        )
+                        # Stop the loop - do not retry the failed request
+                        break
+
                     # Process the response
                     should_stop = self._process_llm_response(
                         llm_response, messages, step_num
@@ -169,11 +178,13 @@ class ReactRailsAgent:
 
             except Exception as e:
                 self.logger.error(f"Error in ReAct step {step_num}", {"error": str(e)})
-                # Continue with next step or stop based on error type
+                # Stop on any exception to prevent retry loops
                 if isinstance(e, (ReActMaxStepsError, ReActLoopError)):
                     break
-                # For other errors, try to continue
-                continue
+                # For other exceptions, also break instead of continuing
+                # This prevents duplicate API calls on errors
+                self.logger.warning(f"Stopping ReAct loop due to exception: {type(e).__name__}")
+                break
 
         # Generate final response
         return self._generate_final_response()
