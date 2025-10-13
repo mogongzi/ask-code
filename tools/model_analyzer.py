@@ -19,7 +19,7 @@ class ModelAnalyzer(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Analyze Rails model files to extract validations, associations, callbacks, and methods."
+        return "Analyze Rails model files to extract validations, associations, callbacks, scopes, and methods."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -32,7 +32,7 @@ class ModelAnalyzer(BaseTool):
                 },
                 "focus": {
                     "type": "string",
-                    "description": "Specific aspect to focus on: 'validations', 'associations', 'callbacks', 'methods', or 'all'",
+                    "description": "Specific aspect to focus on: 'validations', 'associations', 'callbacks', 'methods', 'scopes', or 'all'",
                     "default": "all"
                 }
             },
@@ -129,6 +129,7 @@ class ModelAnalyzer(BaseTool):
             "callbacks": [],
             "methods": [],
             "concerns": [],
+            "scopes": [],
             "class_definition": None
         }
 
@@ -165,6 +166,11 @@ class ModelAnalyzer(BaseTool):
                 method = self._extract_method(line_stripped, i)
                 if method:
                     analysis["methods"].append(method)
+
+            if focus in ["all", "scopes"]:
+                scope = self._extract_scope(line_stripped, i)
+                if scope:
+                    analysis["scopes"].append(scope)
 
             # Concerns/includes
             if line_stripped.startswith('include '):
@@ -249,6 +255,22 @@ class ModelAnalyzer(BaseTool):
             }
         return None
 
+    def _extract_scope(self, line: str, line_number: int) -> Optional[Dict[str, Any]]:
+        """Extract scope definition from line."""
+        scope_pattern = r'^scope\s*(?:\(\s*)?:?["\']?(\w+)'
+        match = re.match(scope_pattern, line)
+
+        if match:
+            scope_name = match.group(1)
+            # Capture the remainder of the definition for context
+            definition = line
+            return {
+                "line": line_number,
+                "name": scope_name,
+                "definition": definition
+            }
+        return None
+
     def _generate_summary(self, analysis: Dict[str, Any]) -> str:
         """Generate concise summary of model analysis."""
         parts = []
@@ -259,6 +281,9 @@ class ModelAnalyzer(BaseTool):
                 assoc_types.setdefault(a["type"], []).append(a["target"])
             assoc_str = ", ".join([f"{k}: {len(v)}" for k, v in assoc_types.items()])
             parts.append(f"Associations: {assoc_str}")
+
+        if analysis["scopes"]:
+            parts.append(f"Scopes: {len(analysis['scopes'])}")
 
         if analysis["validations"]:
             parts.append(f"Validations: {len(analysis['validations'])}")
@@ -287,6 +312,13 @@ class ModelAnalyzer(BaseTool):
 
         if result.get("summary"):
             lines.append(f"**Summary**: {result['summary']}\n")
+
+        if result.get("scopes"):
+            lines.append(f"### Scopes ({len(result['scopes'])})")
+            for scope in result["scopes"][:10]:
+                lines.append(f"- Line {scope['line']}: `{scope['name']}` → {scope['definition']}")
+            if len(result["scopes"]) > 10:
+                lines.append(f"  ... +{len(result['scopes']) - 10} more\n")
 
         # Associations
         if result.get("associations"):
@@ -334,7 +366,14 @@ class ModelAnalyzer(BaseTool):
             return False
 
         focus = input_params.get("focus", "all")
-        valid_focus = ["all", "validations", "associations", "callbacks", "methods"]
+        valid_focus = [
+            "all",
+            "validations",
+            "associations",
+            "callbacks",
+            "methods",
+            "scopes",
+        ]
         if focus not in valid_focus:
             return False
 

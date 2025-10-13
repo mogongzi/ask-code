@@ -291,7 +291,8 @@ def repl(
 
                 # Clear agent state
                 react_agent.state_machine.reset()
-                react_agent.conversation_history.clear()
+                if hasattr(react_agent, "conversation"):
+                    react_agent.conversation.clear_history()
 
                 usage.reset()
                 console.print("[green]✓ Conversation and agent state cleared[/green]")
