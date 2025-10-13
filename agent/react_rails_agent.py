@@ -57,11 +57,8 @@ class ReactRailsAgent:
         self.llm_client = LLMClient(session, self.console)
         self.response_analyzer = ResponseAnalyzer()
 
-        # Initialize conversation manager with compression settings
-        self.conversation = ConversationManager(
-            max_history_tokens=self.config.max_history_tokens,
-            recent_tool_results=self.config.recent_tool_result_messages,
-        )
+        # Initialize conversation manager
+        self.conversation = ConversationManager()
 
         # Performance metrics
         self._start_time: Optional[float] = None
@@ -221,7 +218,7 @@ class ReactRailsAgent:
 
         # Record action and observation steps for tool calls
         if llm_response.tool_calls:
-            # Add tool messages to conversation manager (auto-compresses)
+            # Add tool messages to conversation manager
             tool_messages = self.llm_client.format_tool_messages(
                 llm_response.tool_calls
             )
