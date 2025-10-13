@@ -364,28 +364,26 @@ class ReActStateMachine:
         tools_used = list(self.state.tools_used)
         search_attempts = self.state.search_attempts
 
-        prompt = f"\n--- CONTEXT FROM PREVIOUS STEPS ---\n"
-        prompt += f"You are now on step {self.state.current_step + 1}. "
-        prompt += f"Previous tools used: {', '.join(tools_used)}\n"
+        lines = [
+            f"\nStep {self.state.current_step + 1}: continue from prior reasoning."
+        ]
+
+        if tools_used:
+            lines.append(f"Tools used so far: {', '.join(tools_used)}.")
 
         if search_attempts:
-            prompt += "Previous search attempts:\n"
-            for attempt in search_attempts[-3:]:  # Show last 3 attempts
-                prompt += f"- {attempt}\n"
+            recent_attempts = "; ".join(search_attempts[-2:])
+            lines.append(f"Recent searches: {recent_attempts}.")
 
-        # Progressive strategy suggestions based on step
-        step = self.state.current_step
-        if step == 1:
-            prompt += "\n🎯 NEXT STRATEGY: The SQL analysis found no direct matches. "
-            prompt += "Try ripgrep to search for window function patterns: 'SUM(', 'OVER (', 'LAG(' in .rb files."
-        elif step == 2:
-            prompt += "\n🎯 NEXT STRATEGY: Search in models/controllers for analytics methods. "
-            prompt += "Use model_analyzer on Product model or controller_analyzer on reporting controllers."
-        elif step == 3:
-            prompt += "\n🎯 NEXT STRATEGY: Search for raw SQL execution. "
-            prompt += "Use ripgrep to find 'connection.execute', 'find_by_sql', or ActiveRecord::Base patterns."
-        elif step == 4:
-            prompt += "\n🎯 NEXT STRATEGY: Look for custom SQL files or complex query builders. "
-            prompt += "Try ast_grep for method definitions containing 'SELECT' or search for .sql files."
+        step_strategies = {
+            1: "Consider fallback search (e.g., ripgrep) if semantic match was empty.",
+            2: "Inspect related models or controllers with model_analyzer / controller_analyzer.",
+            3: "Check for raw SQL helpers such as connection.execute or find_by_sql.",
+            4: "Look for custom query builders or .sql files with ast_grep if needed.",
+        }
 
-        return prompt
+        strategy = step_strategies.get(self.state.current_step)
+        if strategy:
+            lines.append(f"Next idea: {strategy}")
+
+        return " ".join(lines)
