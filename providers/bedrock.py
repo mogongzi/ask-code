@@ -99,7 +99,10 @@ def build_payload(
         if formatted_system:
             payload["system"] = formatted_system
 
-    # Messages come after system prompt
+    if tools:
+        payload["tools"] = tools
+
+    # Messages should come after system prompt and tool definitions
     payload["messages"] = processed_messages
 
     if thinking:
@@ -107,9 +110,6 @@ def build_payload(
             "type": "enabled",
             "budget_tokens": thinking_tokens
         }
-
-    if tools:
-        payload["tools"] = tools
 
     # Optional stop sequences (Anthropic-compatible)
     if stop_sequences:

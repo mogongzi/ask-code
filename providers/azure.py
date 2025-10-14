@@ -156,7 +156,6 @@ def build_payload(
                 final_messages.insert(0, {"role": "user", "content": context_content})
 
     body: Dict = {
-        "messages": final_messages,
         "stream": True,
         "stream_options": {
             "include_usage": True
@@ -175,6 +174,8 @@ def build_payload(
         body["temperature"] = temperature
     if tools:
         body["tools"] = _build_openai_tools(tools)
+
+    body["messages"] = final_messages
     return body
 
 
