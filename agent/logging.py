@@ -346,24 +346,33 @@ class AgentLogger:
         Configure the global agent logger and root logger.
 
         Args:
-            level: Logging level
+            level: Logging level for project loggers (INFO or DEBUG)
             console: Rich console
         """
+        # Create or update the singleton instance
         if cls._instance:
+            # Update existing instance level
             cls._instance.logger.setLevel(getattr(logging, level.upper()))
+            # Update the console if provided
+            if console:
+                cls._instance.console = console
+                # Update handlers with new console
+                for handler in cls._instance.logger.handlers:
+                    if isinstance(handler, NetworkErrorHighlightingHandler):
+                        handler.console = console
         else:
+            # Create new instance
             cls._instance = StructuredLogger("rails_agent", level, console)
 
-        # Also configure root logger to use the custom handler for all modules
-        # This ensures error_handling.py and other modules also get highlighting
+        # Configure root logger - always keep at WARNING to silence third-party libraries
         _console = console or Console()
         root_logger = logging.getLogger()
-        root_logger.setLevel(getattr(logging, level.upper()))
+        root_logger.setLevel(logging.WARNING)
 
         # Remove existing handlers
         root_logger.handlers.clear()
 
-        # Add custom network error highlighting handler
+        # Add custom network error highlighting handler to root
         handler = NetworkErrorHighlightingHandler(
             console=_console,
             show_time=True,
@@ -375,6 +384,41 @@ class AgentLogger:
             datefmt="[%X]"
         ))
         root_logger.addHandler(handler)
+
+        # Configure project-specific loggers to respect the requested level
+        # This allows verbose mode to show DEBUG logs only from our code
+        project_modules = [
+            "agent",
+            "tools",
+            "llm",
+            "chat",
+            "render",
+            "providers",
+            "util",
+        ]
+
+        for module_name in project_modules:
+            module_logger = logging.getLogger(module_name)
+            module_logger.setLevel(getattr(logging, level.upper()))
+            # Clear any existing handlers to avoid duplicates
+            module_logger.handlers.clear()
+            # Keep propagate=True so these loggers use the root handler
+            module_logger.propagate = True
+
+        # Explicitly silence noisy third-party libraries
+        third_party_loggers = [
+            "markdown_it",  # markdown-it-py used by rich
+            "asyncio",      # asyncio event loop
+            "urllib3",      # HTTP library
+            "httpx",        # HTTP library
+            "httpcore",     # HTTP library
+        ]
+
+        for logger_name in third_party_loggers:
+            third_party_logger = logging.getLogger(logger_name)
+            third_party_logger.setLevel(logging.WARNING)
+            # Keep propagate=True so WARNING/ERROR still reach root handler
+            third_party_logger.propagate = True
 
     @classmethod
     def set_context(cls, **kwargs) -> None:

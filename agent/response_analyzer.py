@@ -175,6 +175,66 @@ class ResponseAnalyzer:
                 return True
         return ("app/" in response and ".rb" in response) or ("def " in response)
 
+    def _has_callbacks_needing_investigation(self, response: str, react_state: ReActState) -> bool:
+        """
+        Check if response mentions callbacks that haven't been investigated yet.
+
+        IMPORTANT: Only returns True for the FIRST time callbacks are detected.
+        After 2-3 file_reader calls, assumes sufficient investigation has occurred.
+
+        Args:
+            response: The LLM response text
+            react_state: Current ReAct state
+
+        Returns:
+            True if callbacks are mentioned but not fully investigated (and investigation not exhausted)
+        """
+        # OPTIMIZATION 1: If we've used file_reader 3+ times, stop investigating callbacks
+        file_reader_count = react_state.tool_stats.get('file_reader', None)
+        if file_reader_count and file_reader_count.usage_count >= 3:
+            return False  # Already investigated enough
+
+        # OPTIMIZATION 2: If we're past step 10, stop investigating (allow finalization)
+        # This allows more time for complex transaction analysis but still forces synthesis
+        if react_state.current_step >= 10:
+            return False
+
+        # Check for callback mentions
+        callback_patterns = [
+            r'after_save\s*:\s*\w+',
+            r'after_create\s*:\s*\w+',
+            r'before_save\s*:\s*\w+',
+            r'after_commit\s*:\s*\w+',
+            r'callback[s]?\s+(fire|trigger|execute)',
+        ]
+
+        has_callback_mention = any(
+            re.search(pattern, response, re.IGNORECASE)
+            for pattern in callback_patterns
+        )
+
+        if not has_callback_mention:
+            return False
+
+        # Check if we've read callback implementations
+        has_transaction = 'transaction' in response.lower() or 'BEGIN' in response
+        has_multiple_queries = response.count('INSERT') + response.count('UPDATE') + response.count('SELECT') > 3
+
+        # If transaction with callbacks but no implementation details, needs investigation
+        if has_transaction and has_callback_mention and has_multiple_queries:
+            # Check if we've already read ANY callback implementations (def method_name patterns)
+            has_def_patterns = response.count('def ') >= 2  # At least 2 method definitions shown
+            has_file_reads = file_reader_count and file_reader_count.usage_count >= 1
+
+            # If we've read files and seen method definitions, consider it investigated
+            if has_file_reads and has_def_patterns:
+                return False
+
+            # Only suggest investigation if we haven't started yet
+            return not has_file_reads
+
+        return False
+
     def _check_semantic_final_patterns(self, response: str, react_state: ReActState) -> Optional[AnalysisResult]:
         """
         Check for semantic patterns that indicate a final answer.
@@ -189,6 +249,15 @@ class ResponseAnalyzer:
         Returns:
             AnalysisResult if final answer detected, None otherwise
         """
+        # IMPORTANT: Check if callbacks need investigation before declaring final
+        if self._has_callbacks_needing_investigation(response, react_state):
+            return AnalysisResult(
+                is_final=False,
+                confidence="medium",
+                reason="Response mentions callbacks but implementations not yet investigated",
+                suggestions=["Read callback implementations for complete understanding"],
+                has_concrete_results=True
+            )
         # Pattern 1: Emoji-prefixed conclusion headers (e.g., "🎯 EXACT MATCH FOUND", "✅ FOUND", etc.)
         # BUT: Only if not followed by investigation intent
         emoji_match = re.search(r'(^|\n)[\U0001F300-\U0001F9FF]\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL|ANSWER|RESULT)',
@@ -240,6 +309,17 @@ class ResponseAnalyzer:
                 is_final=True,
                 confidence="high",
                 reason="Contains comprehensive answer with confidence, flow analysis, and code locations",
+                suggestions=[],
+                has_concrete_results=True
+            )
+
+        # Pattern 4: If we're past step 12 and have concrete results, force finalization
+        # This prevents the agent from endlessly searching when it already has good findings
+        if react_state.current_step >= 12 and has_code and has_rails and len(response) > 300:
+            return AnalysisResult(
+                is_final=True,
+                confidence="medium",
+                reason=f"Step {react_state.current_step}: Has concrete code results, time to synthesize findings",
                 suggestions=[],
                 has_concrete_results=True
             )
