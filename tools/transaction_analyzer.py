@@ -16,7 +16,7 @@ from .base_tool import BaseTool
 from .enhanced_sql_rails_search import EnhancedSQLRailsSearch
 from .components.sql_log_extractor import AdaptiveSQLExtractor, SQLType, ExtractedSQL
 from .semantic_sql_analyzer import SemanticSQLAnalyzer, QueryIntent
-from .components.rails_naming import table_to_model
+from .components.rails_inflection import table_to_model
 from .model_analyzer import ModelAnalyzer
 
 
