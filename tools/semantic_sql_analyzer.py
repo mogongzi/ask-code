@@ -11,7 +11,7 @@ from sqlglot import exp
 from typing import Any, Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
-from .components.rails_naming import table_to_model
+from .components.rails_inflection import table_to_model
 
 
 class QueryIntent(Enum):
