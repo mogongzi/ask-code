@@ -9,7 +9,7 @@ and singularization, ensuring compatibility with Rails naming conventions.
 """
 
 # Uncountable words (no plural/singular distinction)
-UNCOUNTABLES = {
+UNCOUNTABLE_NOUNS = {
     "equipment", "information", "rice", "money", "species",
     "series", "fish", "sheep", "jeans", "police", "metadata",
     "data", "news"  # data and news can be both singular and plural
@@ -98,10 +98,10 @@ def singularize(word: str) -> str:
 
     lower_word = word.lower()
 
-    # Check uncountables first (before any processing)
+    # Check uncountable nouns first (before any processing)
     # Split on underscores and check the last word
     parts = lower_word.split("_")
-    if parts[-1] in UNCOUNTABLES:
+    if parts[-1] in UNCOUNTABLE_NOUNS:
         return word
 
     # Check irregulars

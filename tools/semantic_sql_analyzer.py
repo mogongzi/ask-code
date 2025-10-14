@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlglot
 from sqlglot import exp
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field
 from enum import Enum
 from .components.rails_inflection import table_to_model
