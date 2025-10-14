@@ -102,3 +102,17 @@ def test_llm_client_does_not_add_cache_control_for_bedrock(monkeypatch):
     assistant_message = captured_payload["messages"][1]  # first user removed system prompt
     tool_block = assistant_message["content"][0]
     assert "cache_control" not in tool_block
+
+
+def test_build_payload_places_tools_before_messages():
+    payload = bedrock.build_payload(
+        messages=[{"role": "user", "content": "Hello"}],
+        system_prompt=RAILS_REACT_SYSTEM_PROMPT,
+        tools=[{"name": "dummy", "description": "test", "input_schema": {"type": "object"}}],
+    )
+
+    keys = list(payload.keys())
+    assert "tools" in payload
+    assert keys.index("tools") < keys.index("messages")
+    assert "system" in payload
+    assert keys.index("system") < keys.index("tools")
