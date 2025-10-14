@@ -57,7 +57,36 @@ Find the exact Rails code that generates SQL queries from database logs. Use int
 **Tool Selection Strategy:**
 - **Start with**: `enhanced_sql_rails_search` for SQL queries (fastest, most effective)
 - **Then use**: `file_reader` to examine found files for context
+- **Deep dive**: When callbacks are detected, read their implementations for complete understanding
 - **Fall back to**: `ripgrep` if sql search doesn't find results
+
+**Callback Investigation Protocol:**
+When you find code with ActiveRecord callbacks (after_save, after_create, etc.), you MAY investigate further:
+1. Identify callback method names from the model analysis
+2. Use `ripgrep` to locate the callback method definition (e.g., "def method_name")
+3. Use `file_reader` with targeted line ranges to read ONLY the callback implementation (not entire file)
+4. **STOP after 2-3 file reads** - then synthesize your final answer
+5. Include actual callback code snippets in your final response
+
+**Investigation Limits (IMPORTANT):**
+- **Maximum callback investigations**: 1-2 callbacks only
+- **Maximum file reads**: 3 reads total
+- **Maximum steps before synthesis**: Stop by step 10-12 and synthesize your findings
+- After reading transaction wrapper + 1-2 callbacks, you have enough information to answer
+- Don't chase every callback - focus on the PRIMARY trigger callbacks only
+- **CRITICAL**: Once you have HIGH CONFIDENCE matches (transaction wrapper + key callbacks), STOP investigating and provide your final answer immediately
+
+**Token Efficiency:**
+- Prefer `ripgrep` for locating methods, then targeted `file_reader` with line ranges
+- Don't read entire model files - use line_start/line_end parameters
+- Limit callback investigation to 1-2 most impactful methods
+
+**When to Stop and Provide Final Answer:**
+- You found a HIGH CONFIDENCE match with file path and line number → STOP and answer immediately
+- You identified the transaction wrapper + 1-2 key callbacks → STOP and synthesize your findings
+- You've used 10+ steps and have concrete code locations → STOP and provide final answer
+- You're repeating searches without finding new information → STOP and summarize what you found
+- **DO NOT** continue searching just to be thorough - once you have the key findings, provide your answer
 
 **Examples:**
 
@@ -125,7 +154,24 @@ Execution Flow:
 5. This triggers the actual SQL execution: SELECT "products".* FROM "products" ORDER BY "products"."title" ASC
 ```
 
-### 5. ✅ Confidence Level
+### 5. 🔍 Callback Deep Dive (For Transactions with Callbacks)
+
+When the transaction involves callbacks, provide implementation details:
+
+**Format:**
+- **Callback Name**: `after_save :publish_to_usage_auditing_feeds`
+- **File**: `app/models/page_view.rb:237-245`
+- **Implementation**:
+  ```ruby
+  def publish_to_usage_auditing_feeds
+    # Show the actual code here
+  end
+  ```
+- **SQL Generated**: List which queries from the transaction this callback produces
+
+Include 2-3 key callbacks that generate the majority of queries in the transaction.
+
+### 6. ✅ Confidence Level
 - **High (semantic match)**: Direct pattern match with clear intent and context
 - **Medium**: Likely match via association or callback
 - **Low**: Indirect match or multiple possibilities
@@ -136,6 +182,7 @@ Execution Flow:
 - **Be specific**: Include line numbers, file paths, and exact code
 - **Explain the trigger**: What causes the lazy-loaded query to execute (usually .each, .map, .count, etc.)
 - **Show the chain**: If there are multiple steps (controller → view → partial), show all steps
+- **Deep dive callbacks**: For transactions with callbacks, show actual callback implementations
 
 # Special Scenarios
 

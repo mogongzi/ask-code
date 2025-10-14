@@ -16,7 +16,7 @@ class AgentConfig:
     """Configuration settings for the Rails ReAct agent."""
 
     # Core settings
-    max_react_steps: int = 10
+    max_react_steps: int = 20
     project_root: Optional[str] = None
 
     # Tool configuration
@@ -31,8 +31,8 @@ class AgentConfig:
     timeout: float = 30.0
 
     # Response analysis settings
-    finalization_threshold: int = 2  # Steps before forcing finalization
-    tool_repetition_limit: int = 3   # Max times same tool can be used
+    finalization_threshold: int = 3  # Steps without tools before forcing finalization
+    tool_repetition_limit: int = 4   # Max times same tool can be used without results
 
     # Debug and logging
     debug_enabled: bool = field(default=False)

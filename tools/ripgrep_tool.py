@@ -19,7 +19,7 @@ class RipgrepTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Fast text search in Rails codebase using ripgrep. Excellent for finding exact code patterns, method calls, and string matches."
+        return "Fast text search in Rails codebase using ripgrep. Searches production code only (excludes test/ spec/ directories). Excellent for finding exact code patterns, method calls, and string matches."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -108,6 +108,16 @@ class RipgrepTool(BaseTool):
             # Add context if specified
             if context > 0:
                 cmd.extend(["-C", str(context)])
+
+            # Exclude test directories by default (production code search)
+            # These directories should never contain production code
+            cmd.extend([
+                "--glob", "!test/**",
+                "--glob", "!spec/**",
+                "--glob", "!tests/**",
+                "--glob", "!*_test.rb",
+                "--glob", "!*_spec.rb"
+            ])
 
             # Add file type filters
             for file_type in file_types:

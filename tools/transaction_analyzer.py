@@ -113,6 +113,11 @@ class TransactionAnalyzer(BaseTool):
             # Generate transaction summary
             summary = self._generate_transaction_summary(flow, source_findings, model_analysis)
 
+            # Generate callback suggestions for agent follow-up
+            callback_suggestions = []
+            if model_analysis:
+                callback_suggestions = self._extract_callback_suggestions(model_analysis)
+
             return {
                 "transaction_summary": summary,
                 "query_count": len(flow.queries),
@@ -123,7 +128,8 @@ class TransactionAnalyzer(BaseTool):
                 "data_flow": flow.data_flow,
                 "model_analysis": model_analysis,
                 "source_code_findings": source_findings,
-                "visualization": self._create_flow_visualization(flow)
+                "visualization": self._create_flow_visualization(flow),
+                "callback_investigation_suggestions": callback_suggestions  # NEW: guide agent to investigate
             }
 
         except Exception as e:
@@ -413,8 +419,9 @@ class TransactionAnalyzer(BaseTool):
         }
 
     def _identify_trigger_chains(self, flow: TransactionFlow) -> None:
-        """Identify which queries likely triggered other queries."""
+        """Identify which queries likely triggered other queries (deduplicated)."""
         trigger_pairs = []
+        seen_triggers = set()  # Track unique trigger pairs
 
         for i, query in enumerate(flow.queries):
             if query.operation == 'INSERT':
@@ -425,15 +432,10 @@ class TransactionAnalyzer(BaseTool):
                     # Check if next query references data from this insert
                     if (next_query.references and
                         any(ref.startswith(query.table or '') for ref in next_query.references)):
-                        trigger_pairs.append((f"{query.table}#{i}", f"{next_query.table}#{j}"))
-
-                    # Special patterns for Rails callbacks
-                    if (query.table == 'page_views' and
-                        next_query.table == 'audit_logs'):
-                        trigger_pairs.append(('page_views_insert', 'audit_log_callback'))
-                    elif (query.table == 'audit_logs' and
-                          next_query.table in ['member_actions_feed_items', 'content_usage_feed_items']):
-                        trigger_pairs.append(('audit_log_insert', 'feed_item_callback'))
+                        pair = (f"{query.table}#{i}", f"{next_query.table}#{j}")
+                        if pair not in seen_triggers:
+                            seen_triggers.add(pair)
+                            trigger_pairs.append(pair)
 
         flow.trigger_chain = trigger_pairs
 
@@ -441,22 +443,26 @@ class TransactionAnalyzer(BaseTool):
         """Analyze transaction patterns using generic structural analysis."""
         patterns = []
 
-        # Pattern 1: CASCADE INSERTS - One INSERT triggers others
+        # Pattern 1: CASCADE INSERTS - One INSERT triggers others (deduplicated)
         insert_queries = [q for q in flow.queries if q.operation == 'INSERT']
         if len(insert_queries) > 1:
-            # Check for rapid succession (within 50ms)
+            # Track unique cascade pairs to avoid duplicates
+            seen_cascades = set()
             for i in range(len(insert_queries) - 1):
                 time_diff = self._get_time_diff_ms(insert_queries[i].timestamp, insert_queries[i+1].timestamp)
                 if time_diff < 50:
-                    patterns.append({
-                        "pattern_type": "cascade_insert",
-                        "description": f"INSERT into {insert_queries[i].table} triggers INSERT into {insert_queries[i+1].table}",
-                        "sequence": [insert_queries[i].table, insert_queries[i+1].table],
-                        "time_diff_ms": time_diff,
-                        "likely_cause": "ActiveRecord callback (after_create, after_save) or observer"
-                    })
+                    cascade_key = (insert_queries[i].table, insert_queries[i+1].table)
+                    if cascade_key not in seen_cascades:
+                        seen_cascades.add(cascade_key)
+                        patterns.append({
+                            "pattern_type": "cascade_insert",
+                            "description": f"INSERT into {insert_queries[i].table} triggers INSERT into {insert_queries[i+1].table}",
+                            "sequence": [insert_queries[i].table, insert_queries[i+1].table],
+                            "likely_cause": "ActiveRecord callback (after_create, after_save) or observer"
+                        })
 
-        # Pattern 2: READ-MODIFY-WRITE - SELECT followed by UPDATE on same table
+        # Pattern 2: READ-MODIFY-WRITE - SELECT followed by UPDATE on same table (deduplicated)
+        seen_rmw = set()
         for i in range(len(flow.queries) - 1):
             current = flow.queries[i]
             next_query = flow.queries[i + 1]
@@ -465,14 +471,14 @@ class TransactionAnalyzer(BaseTool):
                 next_query.operation == 'UPDATE' and
                 current.table == next_query.table):
 
-                time_diff = self._get_time_diff_ms(current.timestamp, next_query.timestamp)
-                patterns.append({
-                    "pattern_type": "read_modify_write",
-                    "description": f"SELECT from {current.table} immediately followed by UPDATE",
-                    "table": current.table,
-                    "time_diff_ms": time_diff,
-                    "likely_cause": "Counter cache, optimistic locking, or calculated field update"
-                })
+                if current.table not in seen_rmw:
+                    seen_rmw.add(current.table)
+                    patterns.append({
+                        "pattern_type": "read_modify_write",
+                        "description": f"SELECT from {current.table} immediately followed by UPDATE",
+                        "table": current.table,
+                        "likely_cause": "Counter cache, optimistic locking, or calculated field update"
+                    })
 
         # Pattern 3: BULK OPERATIONS - Multiple similar operations
         operation_groups = {}
@@ -492,19 +498,30 @@ class TransactionAnalyzer(BaseTool):
                     "likely_cause": "Batch processing, analytics updates, or data migration"
                 })
 
-        # Pattern 4: DATA FLOW CHAINS - Track value references
+        # Pattern 4: DATA FLOW CHAINS - Track value references (aggregated to reduce tokens)
+        data_flow_summary = {}
         for i, query in enumerate(flow.queries):
             if query.references:
                 for ref in query.references:
                     ref_table = ref.split('#')[0]
-                    patterns.append({
-                        "pattern_type": "data_flow",
-                        "description": f"Value from {ref_table} used in {query.table} operation",
-                        "from_table": ref_table,
-                        "to_table": query.table,
-                        "operation": query.operation,
-                        "likely_cause": "Foreign key relationship or data dependency"
-                    })
+                    flow_key = (ref_table, query.table)
+                    if flow_key not in data_flow_summary:
+                        data_flow_summary[flow_key] = {"operations": set(), "count": 0}
+                    data_flow_summary[flow_key]["operations"].add(query.operation)
+                    data_flow_summary[flow_key]["count"] += 1
+
+        # Convert aggregated data flows to patterns (much more compact)
+        for (from_table, to_table), info in data_flow_summary.items():
+            operations_str = ", ".join(sorted(info["operations"]))
+            patterns.append({
+                "pattern_type": "data_flow",
+                "description": f"Value from {from_table} used in {to_table} operations ({info['count']} times)",
+                "from_table": from_table,
+                "to_table": to_table,
+                "operations": list(info["operations"]),
+                "count": info["count"],
+                "likely_cause": "Foreign key relationship or data dependency"
+            })
 
         # Pattern 5: CONTROLLER CONTEXT - Extract controller/action from MySQL-style comments
         for query in flow.queries:
@@ -546,7 +563,10 @@ class TransactionAnalyzer(BaseTool):
             return 0.0
 
     def _find_source_code(self, flow: TransactionFlow, max_patterns: int) -> List[Dict[str, Any]]:
-        """Find transaction source code using multi-signal contextual search strategy."""
+        """Find transaction source code using multi-signal contextual search strategy.
+
+        OPTIMIZATION: Deduplicate findings by query type + table to reduce token usage.
+        """
         findings = []
 
         if not self.project_root:
@@ -565,7 +585,18 @@ class TransactionAnalyzer(BaseTool):
             enhanced_search = EnhancedSQLRailsSearch(self.project_root)
             significant_queries = [q for q in flow.queries if q.operation in ['INSERT', 'UPDATE'] and q.table]
 
+            # OPTIMIZATION: Deduplicate by operation + table (avoid multiple INSERT audit_logs entries)
+            seen_query_types = set()
+
             for query in significant_queries[:max_patterns]:
+                query_key = f"{query.operation}_{query.table}"
+
+                # Skip if we've already searched this operation + table combo
+                if query_key in seen_query_types:
+                    continue
+
+                seen_query_types.add(query_key)
+
                 try:
                     search_result = enhanced_search.execute({
                         "sql": query.sql,
@@ -574,6 +605,10 @@ class TransactionAnalyzer(BaseTool):
                     })
 
                     if search_result and not search_result.get("error"):
+                        # OPTIMIZATION: Only include if matches found (skip "Found 0 matches")
+                        if search_result.get("summary", "").startswith("Found 0"):
+                            continue
+
                         findings.append({
                             "query": f"{query.operation} {query.table}",
                             "sql": query.sql[:100] + "..." if len(query.sql) > 100 else query.sql,
@@ -588,7 +623,10 @@ class TransactionAnalyzer(BaseTool):
         return findings
 
     def _analyze_models_in_transaction(self, flow: TransactionFlow) -> Dict[str, Any]:
-        """Analyze Rails models mentioned in the transaction for callbacks and associations."""
+        """Analyze Rails models mentioned in the transaction for callbacks and associations.
+
+        Returns compact model info (callbacks + associations only) to reduce token usage.
+        """
         model_analysis = {}
 
         if not self.project_root:
@@ -613,11 +651,19 @@ class TransactionAnalyzer(BaseTool):
                 })
 
                 if result and not result.get("error"):
+                    # OPTIMIZATION: Store only essential info, not full analysis
+                    callbacks = self._extract_relevant_callbacks(result)
+                    associations = self._extract_relevant_associations(result, tables)
+
+                    # Get model file path for callback location hints
+                    model_file = result.get("file_path", f"app/models/{model_name.lower()}.rb")
+
                     model_analysis[table] = {
                         "model_name": model_name,
-                        "analysis": result,
-                        "callbacks": self._extract_relevant_callbacks(result),
-                        "associations": self._extract_relevant_associations(result)
+                        "model_file": model_file,
+                        "callbacks": callbacks,
+                        "associations": associations
+                        # Removed: "analysis" field that contains full verbose output
                     }
 
             except Exception as e:
@@ -658,9 +704,13 @@ class TransactionAnalyzer(BaseTool):
 
         return callbacks
 
-    def _extract_relevant_associations(self, model_result: Dict[str, Any]) -> List[str]:
-        """Extract associations that might explain data relationships."""
+    def _extract_relevant_associations(self, model_result: Dict[str, Any], tables_in_transaction: set = None) -> List[str]:
+        """Extract associations that might explain data relationships.
+
+        OPTIMIZATION: Filter to only associations involving tables in this transaction.
+        """
         associations = []
+        tables_in_transaction = tables_in_transaction or set()
 
         if "associations" in model_result:
             assoc_data = model_result["associations"]
@@ -672,13 +722,55 @@ class TransactionAnalyzer(BaseTool):
                     if isinstance(assoc, dict):
                         assoc_type = assoc.get("type", "association")
                         target = assoc.get("target", "unknown")
-                        associations.append(f"{assoc_type}: {target}")
+                        assoc_str = f"{assoc_type}: {target}"
+
+                        # Only include if target table is in transaction or if no filter
+                        if not tables_in_transaction or any(table in target.lower() for table in tables_in_transaction):
+                            associations.append(assoc_str)
             elif isinstance(assoc_data, dict):
                 # Dict format: {assoc_type: [assoc_list]}
                 for assoc_type, assoc_list in assoc_data.items():
-                    associations.extend([f"{assoc_type}: {assoc}" for assoc in assoc_list])
+                    for assoc in assoc_list:
+                        assoc_str = f"{assoc_type}: {assoc}"
+                        # Only include if target is in transaction
+                        if not tables_in_transaction or any(table in assoc.lower() for table in tables_in_transaction):
+                            associations.append(assoc_str)
 
-        return associations
+        # Limit to top 5 most relevant (reduce tokens)
+        return associations[:5]
+
+    def _extract_callback_suggestions(self, model_analysis: Dict[str, Any]) -> List[Dict[str, str]]:
+        """Extract suggestions for which callbacks to investigate further.
+
+        OPTIMIZATION: Limits to top 2 callbacks to reduce follow-up reads.
+        """
+        suggestions = []
+
+        for table, info in model_analysis.items():
+            callbacks = info.get('callbacks', [])
+            model_file = info.get('model_file', f"app/models/{info['model_name'].lower()}.rb")
+
+            # Priority callbacks that often generate complex queries
+            priority_keywords = ['save', 'create', 'commit', 'feed', 'audit', 'aggregate', 'publish']
+
+            for callback in callbacks:
+                callback_lower = callback.lower()
+                if any(keyword in callback_lower for keyword in priority_keywords):
+                    # Extract method name from "after_save: method_name" format
+                    if ':' in callback:
+                        method_name = callback.split(':')[-1].strip()
+                        suggestions.append({
+                            'table': table,
+                            'model': info['model_name'],
+                            'model_file': model_file,
+                            'callback': callback,
+                            'method_name': method_name,
+                            'priority': 'high',
+                            'reason': 'Likely generates multiple queries (feed/audit/aggregate pattern)'
+                        })
+
+        # OPTIMIZATION: Return only top 2 most important (was 3)
+        return suggestions[:2]
 
     def _generate_transaction_summary(self, flow: TransactionFlow, source_findings: List[Dict], model_analysis: Dict[str, Any] = None) -> str:
         """Generate a human-readable summary of the transaction."""
@@ -706,8 +798,6 @@ class TransactionAnalyzer(BaseTool):
                 summary_lines.append(f"• {pattern['pattern_type']}: {pattern['description']}")
                 if 'likely_cause' in pattern:
                     summary_lines.append(f"  Likely cause: {pattern['likely_cause']}")
-                if 'time_diff_ms' in pattern:
-                    summary_lines.append(f"  Time difference: {pattern['time_diff_ms']:.1f}ms")
             summary_lines.append("")
 
         # Trigger chains
@@ -730,6 +820,18 @@ class TransactionAnalyzer(BaseTool):
                     summary_lines.append("  Associations:")
                     for assoc in info['associations'][:3]:  # Show top 3
                         summary_lines.append(f"    - {assoc}")
+                summary_lines.append("")
+
+            # Add callback investigation suggestions
+            callback_suggestions = self._extract_callback_suggestions(model_analysis)
+            if callback_suggestions:
+                summary_lines.append("💡 SUGGESTED FOLLOW-UP: Investigate these callback implementations:")
+                for suggestion in callback_suggestions:
+                    summary_lines.append(f"  • {suggestion['model']}#{suggestion['method_name']}")
+                    summary_lines.append(f"    Callback: {suggestion['callback']}")
+                    summary_lines.append(f"    Reason: {suggestion['reason']}")
+                    # OPTIMIZATION: Suggest searching for method definition instead of reading entire file
+                    summary_lines.append(f"    📖 Use ripgrep to find 'def {suggestion['method_name']}' in {suggestion['model_file']}")
                 summary_lines.append("")
 
         # Source code findings
@@ -985,19 +1087,38 @@ class TransactionAnalyzer(BaseTool):
         return matches[:5]  # Return top 5 matches
 
     def _create_flow_visualization(self, flow: TransactionFlow) -> Dict[str, Any]:
-        """Create a visual representation of the transaction flow."""
+        """Create a visual representation of the transaction flow.
+
+        OPTIMIZATION: Remove redundant timestamps and empty references to reduce tokens.
+        """
+        # Check if all timestamps are identical (common in logs with low precision)
+        timestamps = [q.timestamp for q in flow.queries if q.timestamp]
+        all_same_timestamp = len(set(timestamps)) == 1 if timestamps else False
+
+        timeline = []
+        for i, q in enumerate(flow.queries):
+            step = {
+                "step": i + 1,
+                "operation": f"{q.operation} {q.table or 'N/A'}"
+            }
+            # Only include timestamp if they vary (saves tokens when all identical)
+            if not all_same_timestamp and q.timestamp:
+                step["timestamp"] = q.timestamp
+            # Only include references if non-empty (saves tokens)
+            if q.references:
+                step["references"] = q.references
+            timeline.append(step)
+
+        # Deduplicate trigger graph (remove duplicate edges)
+        seen_edges = set()
+        unique_trigger_graph = []
+        for trigger, target in flow.trigger_chain:
+            edge = (trigger, target)
+            if edge not in seen_edges:
+                seen_edges.add(edge)
+                unique_trigger_graph.append({"from": trigger, "to": target})
+
         return {
-            "timeline": [
-                {
-                    "step": i + 1,
-                    "timestamp": q.timestamp,
-                    "operation": f"{q.operation} {q.table or 'N/A'}",
-                    "references": q.references
-                }
-                for i, q in enumerate(flow.queries)
-            ],
-            "trigger_graph": [
-                {"from": trigger, "to": target}
-                for trigger, target in flow.trigger_chain
-            ]
+            "timeline": timeline,
+            "trigger_graph": unique_trigger_graph
         }
