@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import copy
 import json
-from typing import Dict, Iterator, Optional, Tuple, List
+from typing import Dict, Iterator, Optional, Tuple, List, Union
 
 
 Event = Tuple[str, Optional[str]]  # ("model"|"text"|"thinking"|"tool_start"|"tool_input_delta"|"tool_ready"|"done"|"tokens", value)
 
-# Bedrock Anthropic does not support prompt caching yet.
-supports_prompt_caching = False
+# Bedrock Anthropic now supports prompt caching via cache_control metadata.
+supports_prompt_caching = True
+# Message-level cache_control is not yet supported; only system blocks.
+supports_message_cache_control = False
 
 # Approximate maximum context window for common Bedrock Anthropic models.
 # Claude 4 Sonnet supports ~200k tokens context.
@@ -15,8 +18,65 @@ supports_prompt_caching = False
 context_length: int = 200_000
 
 
+def _format_system_prompt(system_prompt: Optional[Union[str, List[dict]]]) -> Optional[List[dict]]:
+    """Format system prompt into Anthropic block structure with cache metadata."""
+    if system_prompt is None:
+        return None
+
+    # When the prompt is already block-structured, ensure cache metadata exists.
+    if isinstance(system_prompt, list):
+        formatted_blocks: List[dict] = []
+        for block in system_prompt:
+            if not isinstance(block, dict):
+                continue
+            prepared_block = copy.deepcopy(block)
+            cache_control = dict(prepared_block.get("cache_control") or {})
+            cache_control.setdefault("type", "ephemeral")
+            prepared_block["cache_control"] = cache_control
+            formatted_blocks.append(prepared_block)
+        return formatted_blocks or None
+
+    if not isinstance(system_prompt, str):
+        return None
+
+    marker = "# Tool Usage (ReAct Pattern)"
+    instructions_text = system_prompt
+    tool_text = ""
+
+    if marker in system_prompt:
+        instructions_text, remainder = system_prompt.split(marker, 1)
+        tool_text = f"{marker}{remainder}"
+
+    blocks: List[dict] = []
+
+    instructions_text = instructions_text.strip()
+    if instructions_text:
+        blocks.append({
+            "type": "text",
+            "text": instructions_text,
+            "cache_control": {"type": "ephemeral"}
+        })
+
+    tool_text = tool_text.strip()
+    if tool_text:
+        blocks.append({
+            "type": "text",
+            "text": tool_text,
+            "cache_control": {"type": "ephemeral"}
+        })
+
+    if not blocks:
+        blocks.append({
+            "type": "text",
+            "text": system_prompt.strip(),
+            "cache_control": {"type": "ephemeral"}
+        })
+
+    return blocks
+
+
 def build_payload(
-    messages: List[dict], *, model: Optional[str] = None, max_tokens: int = 4096, temperature: Optional[float] = None, thinking: bool = False, thinking_tokens: int = 1024, tools: Optional[List[dict]] = None, system_prompt: Optional[str] = None, stop_sequences: Optional[List[str]] = None, **_: dict
+    messages: List[dict], *, model: Optional[str] = None, max_tokens: int = 4096, temperature: Optional[float] = None, thinking: bool = False, thinking_tokens: int = 1024, tools: Optional[List[dict]] = None, system_prompt: Optional[Union[str, List[dict]]] = None, stop_sequences: Optional[List[str]] = None, **_: dict
 ) -> dict:
     """Construct Bedrock/Anthropic-style chat payload.
 
@@ -35,7 +95,9 @@ def build_payload(
 
     # Anthropic-style API supports top-level 'system' for instructions
     if system_prompt:
-        payload["system"] = system_prompt
+        formatted_system = _format_system_prompt(system_prompt)
+        if formatted_system:
+            payload["system"] = formatted_system
 
     # Messages come after system prompt
     payload["messages"] = processed_messages

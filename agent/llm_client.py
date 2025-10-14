@@ -194,8 +194,18 @@ class LLMClient:
         provider = getattr(self.session, "provider", None)
         if provider is not None:
             supports_prompt_caching = getattr(provider, "supports_prompt_caching", None)
-            if supports_prompt_caching is not None:
-                return bool(supports_prompt_caching)
+            if supports_prompt_caching is None:
+                return False
+            if not bool(supports_prompt_caching):
+                return False
+
+            supports_message_cache = getattr(
+                provider, "supports_message_cache_control", True
+            )
+            if not bool(supports_message_cache):
+                return False
+
+            return True
 
         return False
 
