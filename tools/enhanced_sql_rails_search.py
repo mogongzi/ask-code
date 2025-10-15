@@ -212,12 +212,27 @@ class EnhancedSQLRailsSearch(BaseTool):
             snippet = match.snippet
             if len(snippet) > 80:
                 snippet = snippet[:77] + "..."
-            compact_matches.append({
+
+            match_info = {
                 "path": match.path,
                 "line": match.line,
                 "snippet": snippet,
                 "confidence": match.confidence
-            })
+            }
+
+            # Include "why" details if they contain important information (missing clauses, match scores)
+            if match.why:
+                # Filter for important indicators
+                important_why = [
+                    reason for reason in match.why
+                    if "missing:" in reason.lower() or
+                       "matched" in reason.lower() or
+                       "/" in reason  # e.g., "matched 2/3 conditions"
+                ]
+                if important_why:
+                    match_info["details"] = important_why
+
+            compact_matches.append(match_info)
 
         result = {
             "summary": f"Found {matches_count} match{'es' if matches_count != 1 else ''}",
@@ -418,12 +433,26 @@ class EnhancedSQLRailsSearch(BaseTool):
                 model_pattern = rf"{re.escape(analysis.primary_model)}\.where\b"
                 found = self.search_engine.search(model_pattern, "rb")
                 for result in found:
+                    # Calculate match completeness to determine confidence
+                    completeness = self._calculate_match_completeness(result["content"], analysis)
+
+                    # Build why list with completeness details
+                    why = ["where clause match", f"model: {analysis.primary_model}"]
+                    if completeness["missing_clauses"]:
+                        why.append(f"missing: {', '.join(completeness['missing_clauses'])}")
+                    if completeness["total_conditions"] > 0:
+                        why.append(f"matched {completeness['matched_conditions']}/{completeness['total_conditions']} conditions")
+
+                    # Use calculated confidence instead of hardcoded "high"
+                    conf_label = completeness["confidence"]
+                    conf_detail = f"score: {completeness['completeness_score']}"
+
                     matches.append(SQLMatch(
                         path=result["file"],
                         line=result["line"],
                         snippet=result["content"],
-                        why=["where clause match", f"model: {analysis.primary_model}"],
-                        confidence="high (model match)",
+                        why=why,
+                        confidence=f"{conf_label} ({conf_detail})",
                         match_type="definition"
                     ))
 
@@ -647,12 +676,26 @@ class EnhancedSQLRailsSearch(BaseTool):
                 for pattern in patterns:
                     found = self.search_engine.search(pattern, "rb")
                     for result in found[:2]:  # Limit association matches
+                        # Calculate match completeness
+                        completeness = self._calculate_match_completeness(result["content"], analysis)
+
+                        # Build why list with completeness details
+                        why = ["association usage", f"foreign key: {condition.column.name}"]
+                        if completeness["missing_clauses"]:
+                            why.append(f"missing: {', '.join(completeness['missing_clauses'])}")
+                        if completeness["total_conditions"] > 0:
+                            why.append(f"matched {completeness['matched_conditions']}/{completeness['total_conditions']} conditions")
+
+                        # Use calculated confidence
+                        conf_label = completeness["confidence"]
+                        conf_detail = f"score: {completeness['completeness_score']}"
+
                         matches.append(SQLMatch(
                             path=result["file"],
                             line=result["line"],
                             snippet=result["content"],
-                            why=["association usage", f"foreign key: {condition.column.name}"],
-                            confidence="medium (association)",
+                            why=why,
+                            confidence=f"{conf_label} ({conf_detail})",
                             match_type="definition"
                         ))
 
@@ -710,6 +753,151 @@ class EnhancedSQLRailsSearch(BaseTool):
                     ))
 
         return matches
+
+    def _calculate_match_completeness(self, snippet: str, analysis: QueryAnalysis) -> Dict[str, Any]:
+        """
+        Calculate how completely a code snippet matches the SQL query.
+
+        Checks:
+        - WHERE conditions: Are all SQL conditions present in the code?
+        - ORDER BY clause: Does code have .order() if SQL has ORDER BY?
+        - LIMIT clause: Does code have .limit()/.take() if SQL has LIMIT?
+        - OFFSET clause: Does code have .offset() if SQL has OFFSET?
+
+        Args:
+            snippet: Rails code snippet
+            analysis: Semantic analysis of the SQL query
+
+        Returns:
+            {
+                "matched_conditions": 2,
+                "total_conditions": 3,
+                "has_order": True/False,
+                "has_limit": True/False,
+                "has_offset": True/False,
+                "completeness_score": 0.6,  # 0.0 to 1.0
+                "confidence": "high"/"medium"/"low"/"partial"
+            }
+        """
+        snippet_lower = snippet.lower()
+
+        # Count WHERE conditions matched
+        total_conditions = len(analysis.where_conditions)
+        matched_conditions = 0
+
+        for condition in analysis.where_conditions:
+            col_name = condition.column.name.lower()  # Normalize to lowercase
+            # Check if column appears in the snippet
+            # Handle both hash syntax (:column_name =>) and keyword syntax (column_name:)
+            if (col_name in snippet_lower or
+                f":{col_name}" in snippet_lower or
+                f"{col_name}:" in snippet_lower):
+                matched_conditions += 1
+
+        # Check for ORDER BY clause
+        sql_has_order = analysis.has_order or "order by" in analysis.raw_sql.lower()
+        code_has_order = ".order(" in snippet_lower or ".order " in snippet_lower
+
+        # Check for LIMIT clause
+        sql_has_limit = analysis.has_limit or "limit" in analysis.raw_sql.lower()
+        code_has_limit = (
+            ".limit(" in snippet_lower or
+            ".take(" in snippet_lower or
+            ".first" in snippet_lower or
+            ".last" in snippet_lower
+        )
+
+        # Check for OFFSET clause
+        sql_has_offset = "offset" in analysis.raw_sql.lower()
+        code_has_offset = ".offset(" in snippet_lower
+
+        # Calculate completeness score
+        score = 0.0
+        weights = {
+            "conditions": 0.5,  # WHERE conditions are most important
+            "order": 0.2,
+            "limit": 0.15,
+            "offset": 0.15
+        }
+
+        # WHERE conditions score
+        if total_conditions > 0:
+            condition_score = matched_conditions / total_conditions
+            score += condition_score * weights["conditions"]
+        else:
+            score += weights["conditions"]  # No conditions = full score for this part
+
+        # ORDER BY score
+        if sql_has_order:
+            if code_has_order:
+                score += weights["order"]
+        else:
+            score += weights["order"]  # No ORDER BY needed = full score
+
+        # LIMIT score
+        if sql_has_limit:
+            if code_has_limit:
+                score += weights["limit"]
+        else:
+            score += weights["limit"]  # No LIMIT needed = full score
+
+        # OFFSET score
+        if sql_has_offset:
+            if code_has_offset:
+                score += weights["offset"]
+        else:
+            score += weights["offset"]  # No OFFSET needed = full score
+
+        # Determine confidence based on completeness
+        if score >= 0.9:
+            confidence = "high"
+        elif score >= 0.7:
+            confidence = "medium"
+        elif score >= 0.4:
+            confidence = "partial"
+        else:
+            confidence = "low"
+
+        return {
+            "matched_conditions": matched_conditions,
+            "total_conditions": total_conditions,
+            "has_order": code_has_order if sql_has_order else None,
+            "has_limit": code_has_limit if sql_has_limit else None,
+            "has_offset": code_has_offset if sql_has_offset else None,
+            "completeness_score": round(score, 2),
+            "confidence": confidence,
+            "missing_clauses": self._identify_missing_clauses(
+                sql_has_order, code_has_order,
+                sql_has_limit, code_has_limit,
+                sql_has_offset, code_has_offset,
+                matched_conditions, total_conditions
+            )
+        }
+
+    def _identify_missing_clauses(
+        self,
+        sql_has_order: bool, code_has_order: bool,
+        sql_has_limit: bool, code_has_limit: bool,
+        sql_has_offset: bool, code_has_offset: bool,
+        matched_conditions: int, total_conditions: int
+    ) -> List[str]:
+        """Identify which SQL clauses are missing from the code match."""
+        missing = []
+
+        if total_conditions > 0 and matched_conditions < total_conditions:
+            missing_count = total_conditions - matched_conditions
+            missing.append(f"{missing_count} WHERE condition(s)")
+
+        if sql_has_order and not code_has_order:
+            missing.append("ORDER BY")
+
+        if sql_has_limit and not code_has_limit:
+            missing.append("LIMIT")
+
+        if sql_has_offset and not code_has_offset:
+            missing.append("OFFSET")
+
+        return missing
 
     # Legacy search helpers removed (replaced by semantic strategies)
 
