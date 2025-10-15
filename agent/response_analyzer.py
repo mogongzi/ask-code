@@ -249,33 +249,11 @@ class ResponseAnalyzer:
         Returns:
             AnalysisResult if final answer detected, None otherwise
         """
-        # Pattern 1: Emoji-prefixed conclusion headers (e.g., "🎯 EXACT MATCH FOUND", "✅ FOUND", etc.)
-        # BUT: Only if not followed by investigation intent
-        emoji_match = re.search(r'(^|\n)[\U0001F300-\U0001F9FF]\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL|ANSWER|RESULT)',
-                     response, re.IGNORECASE | re.MULTILINE)
-        if emoji_match:
-            # Check if the "FOUND" is followed by investigation intent
-            text_after_match = response[emoji_match.end():emoji_match.end()+200]  # Check next 200 chars
-            has_investigation_intent = any(
-                re.search(pattern, text_after_match, re.IGNORECASE)
-                for pattern in self.INVESTIGATION_INTENT_PATTERNS
-            )
-
-            if not has_investigation_intent and self._has_concrete_results(response):
-                return AnalysisResult(
-                    is_final=True,
-                    confidence="high",
-                    reason="Contains emoji-prefixed conclusion with concrete results",
-                    suggestions=[],
-                    has_concrete_results=True
-                )
-
-        # Pattern 2: Structured conclusion sections with headers
+        # Pattern 1: Structured conclusion sections with headers
+        # Look for markdown headers or explicit conclusion keywords
         conclusion_headers = [
             r'(^|\n)#{1,3}\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL ANSWER|ANALYSIS COMPLETE)',
             r'(^|\n)(EXACT MATCH|FOUND|SOLUTION)[:：]',
-            r'(^|\n)File:\s+\w+',  # "File: lib/..." format
-            r'(^|\n)Location:\s+\w+',
         ]
 
         for header_pattern in conclusion_headers:
@@ -285,6 +263,28 @@ class ResponseAnalyzer:
                         is_final=True,
                         confidence="high",
                         reason="Contains structured conclusion section with file locations",
+                        suggestions=[],
+                        has_concrete_results=True
+                    )
+
+        # Pattern 2: File location format (indicates found source code)
+        # Look for explicit file location patterns: "File: path" or "Location: path" followed by code
+        file_location_patterns = [
+            r'(^|\n)(File|Location|Source):\s+[\w/]+\.rb',
+            r'(^|\n)[\w/]+\.rb:\d+',  # file.rb:123 format
+        ]
+
+        for location_pattern in file_location_patterns:
+            if re.search(location_pattern, response, re.IGNORECASE | re.MULTILINE):
+                # Must also have code context (line numbers, code snippets)
+                has_line_ref = bool(re.search(r'(Line|line):\s*\d+', response))
+                has_code_snippet = bool(re.search(r'(Code|code):', response))
+
+                if (has_line_ref or has_code_snippet) and self._has_rails_patterns(response):
+                    return AnalysisResult(
+                        is_final=True,
+                        confidence="high",
+                        reason="Contains explicit file location with code context",
                         suggestions=[],
                         has_concrete_results=True
                     )

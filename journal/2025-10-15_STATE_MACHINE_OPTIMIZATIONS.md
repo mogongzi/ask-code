@@ -350,3 +350,60 @@ Step 4: "🎯 EXACT MATCH FOUND"
 ```
 
 **Status**: ✅ RESOLVED
+
+---
+
+## Improvement: Remove Unreliable Emoji Pattern Matching
+
+**Issue**: The response analyzer used broad emoji regex pattern matching to detect final answers:
+```python
+emoji_match = re.search(r'(^|\n)[\U0001F300-\U0001F9FF]\s*(EXACT MATCH|FOUND|...)', ...)
+```
+
+This was unreliable because:
+- Emojis are inconsistent (LLM might use different emojis or none at all)
+- Regex range `[\U0001F300-\U0001F9FF]` is too broad and matches unintended characters
+- Tightly couples detection logic to presentation format
+
+**Solution** (agent/response_analyzer.py:252-290):
+
+Replaced emoji pattern with **semantic content patterns**:
+
+1. **Pattern 1: Markdown headers with conclusion keywords**
+   ```python
+   r'(^|\n)#{1,3}\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL ANSWER|...)'
+   r'(^|\n)(EXACT MATCH|FOUND|SOLUTION)[:：]'
+   ```
+   Detects structured conclusions regardless of emojis
+
+2. **Pattern 2: File location format with code context**
+   ```python
+   r'(^|\n)(File|Location|Source):\s+[\w/]+\.rb'
+   r'(^|\n)[\w/]+\.rb:\d+'
+   ```
+   Must also have line references or code snippets
+
+3. **Pattern 3: Comprehensive answer structure** (unchanged)
+   - Confidence statements + execution flow + concrete code
+
+**Benefits**:
+- ✅ More reliable: Focuses on actual content structure
+- ✅ More maintainable: No dependency on emoji usage
+- ✅ Better separation: Presentation (emojis) vs. semantic meaning
+- ✅ Consistent: Works regardless of LLM's formatting choices
+
+**Pattern Checking Order** (after all fixes):
+1. Investigation intent (blocks finalization if LLM wants to continue)
+2. Explicit final answer indicators (hardcoded phrases)
+3. Semantic patterns (structured conclusions, file locations, comprehensive answers)
+4. Concrete results with Rails patterns
+5. ActiveRecord-specific patterns
+6. Context-aware detection (no tool calls after concrete results)
+7. Callback investigation (LAST - only if no answer found)
+
+**Verification**:
+- ✅ All 20 response_analyzer tests pass
+- ✅ No dependency on emoji patterns
+- ✅ Cleaner, more maintainable code
+
+**Status**: ✅ COMPLETED
