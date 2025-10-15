@@ -12,9 +12,9 @@ from typing import List, Optional
 
 from llm.types import ToolCall
 from llm.parsers.base import ResponseParser
-from llm.exceptions import ToolExecutionError
 from tools.executor import ToolExecutor
 from rich.console import Console
+from llm.ui.spinner import SpinnerManager
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +40,8 @@ class ToolExecutionService:
         """
         self.tool_executor = tool_executor
         self.console = console or Console()
+        console_supports_spinner = getattr(self.console, "is_terminal", False)
+        self.spinner = SpinnerManager(console=self.console) if console_supports_spinner else None
 
     def extract_and_execute(
         self,
@@ -98,6 +100,18 @@ class ToolExecutionService:
         # Display "Using tool..." message BEFORE execution starts
         self.console.print(f"[yellow]⚙ Using {tool_name} tool...[/yellow]")
 
+        post_messages = []
+        tool_call: Optional[ToolCall] = None
+        spinner_started = False
+
+        if self.spinner and not self.spinner.is_active():
+            try:
+                self.spinner.start(f"Running {tool_name}...")
+                spinner_started = True
+            except Exception:
+                # Spinner is best-effort; ignore failures and fall back to text output.
+                spinner_started = False
+
         try:
             # Execute the tool
             result_data = self.tool_executor.execute_tool(tool_name, tool_input)
@@ -111,15 +125,14 @@ class ToolExecutionService:
                 logger.warning(f"Tool {tool_name} returned error: {result_data['error']}")
                 result_content = f"Error: {result_data['error']}"
                 display_content = result_content  # Same for errors
-                # Display error
-                self.console.print(f"[red]✗ {display_content}[/red]")
+                post_messages.append(("red", f"✗ {display_content}"))
             else:
                 # Display success with compact result
                 if display_content:
-                    self.console.print(f"[green]✓ {display_content}[/green]")
+                    post_messages.append(("green", f"✓ {display_content}"))
 
             # Create ToolCall object with both full and display results
-            return ToolCall(
+            tool_call = ToolCall(
                 id=tool_id,
                 name=tool_name,
                 input=tool_input,
@@ -131,15 +144,25 @@ class ToolExecutionService:
             logger.error(f"Failed to execute tool {tool_name}: {e}", exc_info=True)
             # Return ToolCall with error message as result
             error_msg = f"Tool execution failed: {str(e)}"
-            # Display exception error
-            self.console.print(f"[red]✗ {error_msg}[/red]")
-            return ToolCall(
+            post_messages.append(("red", f"✗ {error_msg}"))
+            tool_call = ToolCall(
                 id=tool_id,
                 name=tool_name,
                 input=tool_input,
                 result=error_msg,
                 display_result=error_msg  # Same for errors
             )
+        finally:
+            if spinner_started and self.spinner:
+                try:
+                    self.spinner.stop()
+                except Exception:
+                    pass
+
+        for style, message in post_messages:
+            self.console.print(f"[{style}]{message}[/{style}]")
+
+        return tool_call
 
     def has_executor(self) -> bool:
         """Check if tool executor is available.
