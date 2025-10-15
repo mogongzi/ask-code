@@ -59,7 +59,6 @@ class TestReActState:
         assert state.tools_used == set()
         assert state.tool_stats == {}
         assert state.search_attempts == []
-        assert state.step_results == {}
         assert state.findings == []
         assert state.finalize_requested is False
         assert state.should_stop is False

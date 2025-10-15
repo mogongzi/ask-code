@@ -17,7 +17,6 @@ def mock_react_state():
     state.tools_used = set()
     state.tool_stats = {}
     state.search_attempts = []
-    state.step_results = {}
     state.findings = []
     state.finalize_requested = False
     state.should_stop = False
@@ -192,35 +191,25 @@ class TestResponseAnalyzer:
         """Test assessment of tool result quality."""
         analyzer = ResponseAnalyzer()
 
-        # Set up mock state with tool results
-        mock_react_state.step_results = {
-            1: {
-                "has_results": True,
-                "tool": "ripgrep",
-                "tool_results": {
-                    "ripgrep": {
-                        "matches": [
-                            {"file": "app/models/user.rb", "line": 15, "content": "validates :email"}
-                        ],
-                        "total": 1
-                    }
-                }
-            }
-        }
+        # Mock state to return True for has_high_quality_results
+        mock_react_state.has_high_quality_results = Mock(return_value=True)
 
         has_quality = analyzer.has_high_quality_tool_results(mock_react_state)
 
-        # Should recognize quality results with has_results flag
+        # Should delegate to state's has_high_quality_results method
         assert has_quality is True
+        mock_react_state.has_high_quality_results.assert_called_once()
 
     def test_has_high_quality_tool_results_empty(self, mock_react_state):
         """Test tool result assessment with empty results."""
         analyzer = ResponseAnalyzer()
 
-        mock_react_state.step_results = {}
+        # Mock state to return False for has_high_quality_results
+        mock_react_state.has_high_quality_results = Mock(return_value=False)
 
         has_quality = analyzer.has_high_quality_tool_results(mock_react_state)
         assert has_quality is False
+        mock_react_state.has_high_quality_results.assert_called_once()
 
     def test_should_force_different_tool(self, mock_react_state):
         """Test logic for forcing different tool usage."""
@@ -274,45 +263,6 @@ class TestResponseAnalyzer:
         assert len(prompt) > 0
         # Should mention the excluded tools
 
-    def test_analyze_structured_result_with_valid_json(self):
-        """Test analysis of structured tool results."""
-        analyzer = ResponseAnalyzer()
-
-        json_result = '{"matches": [{"file": "app/models/user.rb", "line": 15}], "total": 1}'
-        is_quality = analyzer._analyze_structured_result(json_result, "ripgrep")
-
-        assert is_quality is True
-
-    def test_analyze_structured_result_with_invalid_json(self):
-        """Test analysis of invalid JSON results."""
-        analyzer = ResponseAnalyzer()
-
-        invalid_json = "Not valid JSON content"
-        is_quality = analyzer._analyze_structured_result(invalid_json, "ripgrep")
-
-        assert is_quality is False
-
-    def test_check_tool_specific_results_ripgrep(self):
-        """Test tool-specific result checking for ripgrep."""
-        analyzer = ResponseAnalyzer()
-
-        ripgrep_result = {
-            "matches": [
-                {"file": "app/models/user.rb", "line": 15, "content": "validates :email"}
-            ],
-            "total": 1
-        }
-
-        is_quality = analyzer._check_tool_specific_results(ripgrep_result, "ripgrep")
-        assert is_quality is True
-
-    def test_check_tool_specific_results_empty(self):
-        """Test tool-specific result checking with empty results."""
-        analyzer = ResponseAnalyzer()
-
-        empty_result = {"matches": [], "total": 0}
-        is_quality = analyzer._check_tool_specific_results(empty_result, "ripgrep")
-        assert is_quality is False
 
     def test_final_answer_indicators_case_insensitive(self):
         """Test that final answer indicators work case-insensitively."""

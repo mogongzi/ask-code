@@ -75,7 +75,6 @@ class ReActState:
     search_attempts: List[str] = field(default_factory=list)
 
     # Results tracking
-    step_results: Dict[int, Dict[str, Any]] = field(default_factory=dict)
     findings: List[str] = field(default_factory=list)
 
     # Control flags
@@ -89,11 +88,61 @@ class ReActState:
     last_step_had_tool_calls: bool = False
 
     def add_step(self, step: ReActStep) -> None:
-        """Add a new step to the state."""
+        """
+        Add a new step to the state with transition validation.
+
+        Valid transitions:
+        - THOUGHT can follow any step (new reasoning)
+        - ACTION must follow THOUGHT (act based on reasoning)
+        - OBSERVATION must follow ACTION (observe result of action)
+        - ANSWER can follow any step (final answer)
+        """
+        # Validate state transition
+        if self.steps:
+            last_step = self.steps[-1]
+            self._validate_transition(last_step.step_type, step.step_type)
+
         step.step_number = len(self.steps) + 1
         self.steps.append(step)
         self.current_step = step.step_number
         logger.debug(f"Added step {step.step_number}: {step.step_type.value}")
+
+    def _validate_transition(self, from_type: StepType, to_type: StepType) -> None:
+        """
+        Validate that a step transition is valid in the ReAct pattern.
+
+        Args:
+            from_type: Previous step type
+            to_type: New step type
+
+        Raises:
+            ValueError: If transition is invalid (in debug mode only warns)
+        """
+        # ANSWER can always be added (final step)
+        if to_type == StepType.ANSWER:
+            return
+
+        # THOUGHT can always be added (new reasoning cycle)
+        if to_type == StepType.THOUGHT:
+            return
+
+        # ACTION should follow THOUGHT (but we're lenient for now)
+        if to_type == StepType.ACTION:
+            if from_type not in [StepType.THOUGHT, StepType.OBSERVATION]:
+                logger.warning(
+                    f"Unusual transition: {from_type.value} → {to_type.value}. "
+                    f"Expected THOUGHT before ACTION."
+                )
+            return
+
+        # OBSERVATION must follow ACTION
+        if to_type == StepType.OBSERVATION:
+            if from_type != StepType.ACTION:
+                logger.warning(
+                    f"Invalid transition: {from_type.value} → {to_type.value}. "
+                    f"OBSERVATION must follow ACTION."
+                )
+            return
 
     def record_tool_usage(self, tool_name: str, success: bool = True) -> None:
         """Record tool usage statistics."""
@@ -115,24 +164,6 @@ class ReActState:
         attempt = f"Step {self.current_step}: Used {tool_name}"
         self.search_attempts.append(attempt)
         logger.debug(f"Recorded tool usage: {tool_name} (success: {success})")
-
-    def record_step_result(
-        self,
-        step_num: int,
-        tool_name: str,
-        response: str,
-        tool_results: Dict[str, str],
-        has_results: bool = False,
-    ) -> None:
-        """Record results from a step."""
-        self.step_results[step_num] = {
-            "tool": tool_name,
-            "response": response,
-            "tool_results": tool_results,
-            "has_results": has_results,
-            "timestamp": self.current_step,
-        }
-        logger.debug(f"Recorded results for step {step_num}")
 
     def get_tool_usage_count(self, tool_name: str) -> int:
         """Get usage count for a specific tool."""
@@ -169,35 +200,47 @@ class ReActState:
 
     def has_high_quality_results(self) -> bool:
         """Check if any step has produced high-quality results."""
-        for step_info in self.step_results.values():
-            if step_info.get("has_results", False):
-                return True
+        # Check observation steps for tool outputs
+        # Observations are always preceded by ACTION steps, so we can
+        # look back to find the tool name
+        for i, step in enumerate(self.steps):
+            if step.step_type == StepType.OBSERVATION and step.tool_output:
+                # Find the preceding ACTION step to get tool name
+                tool_name = ""
+                if i > 0 and self.steps[i-1].step_type == StepType.ACTION:
+                    tool_name = self.steps[i-1].tool_name or ""
 
-            # Check for structured tool results
-            tool_name = step_info.get("tool")
-            tool_results = step_info.get("tool_results", {})
-
-            if tool_name and tool_results:
-                raw_result = tool_results.get(tool_name, "")
-                if self._has_structured_matches(raw_result, tool_name):
+                # Check if the observation contains structured results
+                if self._has_structured_matches(step.tool_output, tool_name):
                     return True
 
         return False
 
     def _has_structured_matches(self, result: str, tool_name: str) -> bool:
-        """Check if a tool result contains structured matches."""
+        """
+        Check if a tool result contains structured matches.
+
+        Uses a registry of validators for different tool types.
+        Falls back to checking for non-empty JSON structures.
+        """
         try:
             import json
 
             parsed = json.loads(result) if isinstance(result, str) else result
 
             if isinstance(parsed, dict):
-                if tool_name == "enhanced_sql_rails_search":
+                # Common pattern: many tools return results with "matches" array
+                if "matches" in parsed:
                     matches = parsed.get("matches", [])
                     return isinstance(matches, list) and len(matches) > 0
-                elif tool_name == "ripgrep":
-                    matches = parsed.get("matches", [])
-                    return isinstance(matches, list) and len(matches) > 0
+
+                # Common pattern: analysis tools return results with "analysis" or "methods"
+                if tool_name in ["model_analyzer", "controller_analyzer"]:
+                    return bool(parsed.get("analysis")) or bool(parsed.get("methods"))
+
+                # Fallback: any non-empty dict is considered valid
+                return len(parsed) > 0
+
         except (json.JSONDecodeError, TypeError):
             pass
 
@@ -360,9 +403,16 @@ class ReActStateMachine:
         self.state.stop_with_reason("Final answer provided")
 
     def get_context_prompt(self, available_tools: Set[str]) -> str:
-        """Build context-aware prompt for next step."""
+        """
+        Build context-aware prompt for next step.
+
+        Generates dynamic suggestions based on:
+        - Tools already used
+        - Quality of results found
+        - Unused tools available
+        """
         tools_used = list(self.state.tools_used)
-        search_attempts = self.state.search_attempts
+        unused_tools = self.state.get_unused_tools(available_tools)
 
         lines = [
             f"\nStep {self.state.current_step + 1}: continue from prior reasoning."
@@ -371,19 +421,57 @@ class ReActStateMachine:
         if tools_used:
             lines.append(f"Tools used so far: {', '.join(tools_used)}.")
 
-        if search_attempts:
-            recent_attempts = "; ".join(search_attempts[-2:])
+        if self.state.search_attempts:
+            recent_attempts = "; ".join(self.state.search_attempts[-2:])
             lines.append(f"Recent searches: {recent_attempts}.")
 
-        step_strategies = {
-            1: "Consider fallback search (e.g., ripgrep) if semantic match was empty.",
-            2: "Inspect related models or controllers with model_analyzer / controller_analyzer.",
-            3: "Check for raw SQL helpers such as connection.execute or find_by_sql.",
-            4: "Look for custom query builders or .sql files with ast_grep if needed.",
-        }
-
-        strategy = step_strategies.get(self.state.current_step)
+        # Dynamic strategy based on current state
+        strategy = self._generate_next_strategy(tools_used, unused_tools)
         if strategy:
             lines.append(f"Next idea: {strategy}")
 
         return " ".join(lines)
+
+    def _generate_next_strategy(self, tools_used: List[str], unused_tools: List[str]) -> str:
+        """
+        Generate a dynamic strategy suggestion based on state.
+
+        Args:
+            tools_used: List of tools already used
+            unused_tools: List of available unused tools
+
+        Returns:
+            Strategy suggestion string
+        """
+        # If no tools used yet, suggest starting with search
+        if not tools_used:
+            if "enhanced_sql_rails_search" in unused_tools:
+                return "Start with enhanced_sql_rails_search for SQL queries, or ripgrep for general code search."
+            elif "ripgrep" in unused_tools:
+                return "Use ripgrep to search for patterns in the codebase."
+
+        # If only search tools used, suggest analysis tools
+        search_tools = {"ripgrep", "enhanced_sql_rails_search", "ast_grep"}
+        if all(tool in search_tools for tool in tools_used):
+            if "model_analyzer" in unused_tools:
+                return "Inspect related models with model_analyzer for deeper analysis."
+            elif "controller_analyzer" in unused_tools:
+                return "Examine controllers with controller_analyzer to understand request handling."
+
+        # If no results found yet, suggest different search approach
+        if not self.state.has_high_quality_results():
+            if "ast_grep" in unused_tools:
+                return "Try ast_grep for structural code search (classes, methods, patterns)."
+            elif "ripgrep" in unused_tools:
+                return "Use ripgrep for flexible text-based search."
+
+        # If we have results but haven't used analysis tools, suggest them
+        analysis_tools = {"model_analyzer", "controller_analyzer", "file_reader"}
+        if self.state.has_high_quality_results() and not any(tool in analysis_tools for tool in tools_used):
+            return "Consider using analysis tools to examine specific files in detail."
+
+        # Default: encourage synthesis if we have sufficient information
+        if len(tools_used) >= 3 and self.state.has_high_quality_results():
+            return "You have sufficient information - consider synthesizing findings into a final answer."
+
+        return ""

@@ -12,6 +12,7 @@ import logging
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass
 
+from rich import box
 from rich.console import Console
 from rich.markdown import CodeBlock, Heading, Markdown
 from rich.panel import Panel
@@ -32,12 +33,10 @@ class _HeadingLeft(Heading):
     def __rich_console__(self, console, options):
         text = self.text
         text.justify = "left"
-        if self.tag == "h1":
-            yield Panel(text, box=box.HEAVY, style="markdown.h1.border")
-        else:
-            if self.tag == "h2":
-                yield Text("")
-            yield text
+        # Render headings as plain text without borders for clean output
+        if self.tag == "h2":
+            yield Text("")
+        yield text
 
 
 class MarkdownStyled(Markdown):
