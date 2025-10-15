@@ -81,12 +81,28 @@ When you find code with ActiveRecord callbacks (after_save, after_create, etc.),
 - Don't read entire model files - use line_start/line_end parameters
 - Limit callback investigation to 1-2 most impactful methods
 
+**SQL Match Verification Protocol:**
+When comparing SQL queries to Rails code, you MUST verify completeness:
+
+1. **Count ALL WHERE conditions** in the SQL query (e.g., company_id, status, custom15)
+2. **Verify EVERY condition exists** in the Rails code snippet
+3. **Check for ORDER BY, LIMIT, OFFSET** clauses in SQL
+4. **Confirm corresponding Rails methods** (.order(), .limit(), .offset())
+5. **If ANY clause is missing**, mark as "partial match" and continue investigating
+
+**Match Quality Guidelines:**
+- ✅ **Complete Match**: All SQL conditions + clauses present → HIGH confidence
+- ⚠️  **Partial Match**: Some conditions missing (e.g., 2/3 conditions) → MEDIUM/LOW confidence, investigate further
+- ❌ **Incomplete Match**: Critical conditions missing → Search for missing conditions, scopes, or dynamic builders
+
 **When to Stop and Provide Final Answer:**
-- You found a HIGH CONFIDENCE match with file path and line number → STOP and answer immediately
+- You found a COMPLETE match where ALL SQL conditions and clauses are present → STOP and answer immediately
+- You verified the match by confirming every WHERE condition, ORDER BY, LIMIT, OFFSET exists in code → STOP
 - You identified the transaction wrapper + 1-2 key callbacks → STOP and synthesize your findings
 - You've used 10+ steps and have concrete code locations → STOP and provide final answer
 - You're repeating searches without finding new information → STOP and summarize what you found
-- **DO NOT** continue searching just to be thorough - once you have the key findings, provide your answer
+- **DO NOT** stop on partial matches - investigate missing conditions first
+- **DO NOT** claim "EXACT MATCH" if SQL conditions are missing from the code
 
 **Examples:**
 

@@ -235,6 +235,82 @@ class ResponseAnalyzer:
 
         return False
 
+    def _has_incomplete_sql_match(self, response: str, react_state: ReActState) -> bool:
+        """
+        Detect when agent found partial SQL matches but is claiming high confidence.
+
+        Warning signs:
+        - Mentions "missing" clauses but still claims match
+        - Shows "partial" confidence from tool output
+        - Very few tool calls (< 2) for complex SQL queries
+        - Tool output shows low match scores or missing conditions
+
+        Args:
+            response: The LLM response text
+            react_state: Current ReAct state
+
+        Returns:
+            True if incomplete SQL match detected and needs more investigation
+        """
+        # Only check in early steps - after step 6, allow finalization
+        if react_state.current_step > 6:
+            return False
+
+        # Check if this is an SQL search query (look for SQL patterns in recent steps)
+        if not hasattr(react_state, 'steps') or not react_state.steps:
+            return False  # No steps yet or not a ReActState with steps
+
+        # Get tool names from recent steps (ReActStep objects, not dicts)
+        recent_tool_uses = [
+            step.tool_name for step in react_state.steps[-3:]
+            if hasattr(step, 'tool_name') and step.tool_name
+        ]
+        is_sql_search = 'enhanced_sql_rails_search' in recent_tool_uses
+
+        if not is_sql_search:
+            return False  # Not an SQL search task
+
+        # Detection patterns for incomplete matches
+        incomplete_indicators = [
+            # Explicit mentions of missing elements
+            (r'missing[:：]?\s*(WHERE|condition|ORDER|LIMIT|OFFSET|custom\w+)', 'missing clauses'),
+            (r'but missing', 'incomplete match'),
+            (r'without.*(?:ORDER|LIMIT|OFFSET)', 'missing clauses'),
+
+            # Partial confidence indicators
+            (r'confidence["\']?\s*:\s*["\']?(partial|low)', 'low confidence'),
+            (r'score["\']?\s*:\s*0\.[0-6]', 'low match score'),
+
+            # Condition mismatch indicators
+            (r'matched\s+\d+/\d+\s+conditions', 'partial condition match'),
+            (r'\d+\s+WHERE\s+condition\(s\)', 'missing conditions'),
+
+            # Agent acknowledging incomplete match
+            (r'(?:partial|incomplete)\s+match', 'incomplete'),
+            (r'only\s+(?:matches|found)\s+(?:some|part)', 'partial'),
+        ]
+
+        found_indicators = []
+        for pattern, label in incomplete_indicators:
+            if re.search(pattern, response, re.IGNORECASE):
+                found_indicators.append(label)
+
+        # If we found indicators AND very few tool calls, needs more investigation
+        if found_indicators:
+            tool_count = react_state.current_step
+            if tool_count < 3:
+                # Incomplete match detected, needs more investigation
+                return True
+
+        # Check for "EXACT MATCH" claims with missing indicators
+        # This is the dangerous case - agent claiming exactness despite missing pieces
+        has_exact_claim = bool(re.search(r'EXACT\s+MATCH|match.*exactly', response, re.IGNORECASE))
+        if has_exact_claim and found_indicators:
+            # False exact match claim detected
+            return True
+
+        return False
+
     def _check_semantic_final_patterns(self, response: str, react_state: ReActState) -> Optional[AnalysisResult]:
         """
         Check for semantic patterns that indicate a final answer.
@@ -315,7 +391,22 @@ class ResponseAnalyzer:
                 has_concrete_results=True
             )
 
-        # Pattern 5: Check if callbacks need investigation (ONLY if no concrete answer found above)
+        # Pattern 5: Check for incomplete SQL matches (partial matches claiming high confidence)
+        # This prevents premature finalization when search found partial matches only
+        if self._has_incomplete_sql_match(response, react_state):
+            return AnalysisResult(
+                is_final=False,
+                confidence="low",
+                reason="Partial SQL match found - missing conditions or clauses",
+                suggestions=[
+                    "Search for missing SQL conditions (e.g., specific column names)",
+                    "Use file_reader to examine candidate files in detail",
+                    "Look for scope definitions or dynamic query builders"
+                ],
+                has_concrete_results=True
+            )
+
+        # Pattern 6: Check if callbacks need investigation (ONLY if no concrete answer found above)
         # This check runs LAST to avoid blocking finalization when we have complete answers
         if self._has_callbacks_needing_investigation(response, react_state):
             return AnalysisResult(
