@@ -249,15 +249,6 @@ class ResponseAnalyzer:
         Returns:
             AnalysisResult if final answer detected, None otherwise
         """
-        # IMPORTANT: Check if callbacks need investigation before declaring final
-        if self._has_callbacks_needing_investigation(response, react_state):
-            return AnalysisResult(
-                is_final=False,
-                confidence="medium",
-                reason="Response mentions callbacks but implementations not yet investigated",
-                suggestions=["Read callback implementations for complete understanding"],
-                has_concrete_results=True
-            )
         # Pattern 1: Emoji-prefixed conclusion headers (e.g., "🎯 EXACT MATCH FOUND", "✅ FOUND", etc.)
         # BUT: Only if not followed by investigation intent
         emoji_match = re.search(r'(^|\n)[\U0001F300-\U0001F9FF]\s*(EXACT MATCH|FOUND|CONCLUSION|FINAL|ANSWER|RESULT)',
@@ -321,6 +312,17 @@ class ResponseAnalyzer:
                 confidence="medium",
                 reason=f"Step {react_state.current_step}: Has concrete code results, time to synthesize findings",
                 suggestions=[],
+                has_concrete_results=True
+            )
+
+        # Pattern 5: Check if callbacks need investigation (ONLY if no concrete answer found above)
+        # This check runs LAST to avoid blocking finalization when we have complete answers
+        if self._has_callbacks_needing_investigation(response, react_state):
+            return AnalysisResult(
+                is_final=False,
+                confidence="medium",
+                reason="Response mentions callbacks but implementations not yet investigated",
+                suggestions=["Read callback implementations for complete understanding"],
                 has_concrete_results=True
             )
 
@@ -434,70 +436,23 @@ class ResponseAnalyzer:
         """
         Check if any tool results contain high-quality matches.
 
+        Delegates to ReActState for centralized quality checking.
+
         Args:
             react_state: Current ReAct state
 
         Returns:
             True if high-quality results found, False otherwise
         """
-        for step_info in react_state.step_results.values():
-            if step_info.get('has_results', False):
-                return True
-
-            # Check for structured results in tool outputs
-            tool_name = step_info.get('tool')
-            tool_results = step_info.get('tool_results', {})
-
-            if tool_name and tool_results:
-                raw_result = tool_results.get(tool_name, '')
-                if self._analyze_structured_result(raw_result, tool_name):
-                    return True
-
-        return False
-
-    def _analyze_structured_result(self, result: str, tool_name: str) -> bool:
-        """Analyze structured tool results for quality indicators."""
-        try:
-            if isinstance(result, str):
-                parsed = json.loads(result)
-            else:
-                parsed = result
-
-            if isinstance(parsed, dict):
-                return self._check_tool_specific_results(parsed, tool_name)
-
-        except (json.JSONDecodeError, TypeError):
-            # Fallback to text-based analysis
-            return self._has_concrete_results(str(result))
-
-        return False
-
-    def _check_tool_specific_results(self, parsed: Dict[str, Any], tool_name: str) -> bool:
-        """Check tool-specific result structures for quality."""
-        if tool_name == 'enhanced_sql_rails_search':
-            matches = parsed.get('matches', [])
-            return isinstance(matches, list) and len(matches) > 0
-
-
-        elif tool_name == 'ripgrep':
-            matches = parsed.get('matches', [])
-            return isinstance(matches, list) and len(matches) > 0
-
-        elif tool_name in ['model_analyzer', 'controller_analyzer']:
-            # Check for meaningful analysis results
-            return bool(parsed.get('analysis')) or bool(parsed.get('methods'))
-
-        elif tool_name == 'ast_grep':
-            matches = parsed.get('matches', [])
-            return isinstance(matches, list) and len(matches) > 0
-
-        # Default: assume any structured response is meaningful
-        return len(parsed) > 0
+        return react_state.has_high_quality_results()
 
     def should_force_different_tool(self, react_state: ReActState,
                                    step: int, repetition_limit: int = 3) -> bool:
         """
         Determine if we should force using a different tool.
+
+        Delegates to ReActState for centralized tool forcing logic with
+        additional repetition limit check.
 
         Args:
             react_state: Current ReAct state
@@ -507,17 +462,17 @@ class ResponseAnalyzer:
         Returns:
             True if should force different tool, False otherwise
         """
-        # Only force different tool if we've used the same tool too many times AND no results found
+        # Check if any single tool exceeded the repetition limit
         for tool_name, stats in react_state.tool_stats.items():
             if stats.usage_count >= repetition_limit:
-                # Check if we actually found high-quality results - don't force if we have good results
+                # Check if we actually found high-quality results
                 if not react_state.has_high_quality_results():
                     logger.info(f"Tool {tool_name} used {stats.usage_count} times without results, forcing change")
                     return True
                 else:
                     logger.info(f"Tool {tool_name} used {stats.usage_count} times but found results, continuing")
 
-        # Force if we're stuck in a loop (but only if no results found)
+        # Delegate to state machine for pattern-based detection
         if react_state.should_force_different_tool(step_threshold=2):
             logger.info("Detected tool usage loop, forcing change")
             return True

@@ -15,13 +15,13 @@ class TestAgentConfig:
         """Test default configuration values."""
         config = AgentConfig()
 
-        assert config.max_react_steps == 10
+        assert config.max_react_steps == 20
         assert config.project_root is None
         assert config.debug_enabled is False
         assert config.log_level == "INFO"
         assert config.timeout == 30.0
-        assert config.finalization_threshold == 2
-        assert config.tool_repetition_limit == 3
+        assert config.finalization_threshold == 3
+        assert config.tool_repetition_limit == 4
         assert len(config.allowed_tools) > 0
 
     def test_custom_configuration(self):
@@ -72,7 +72,7 @@ class TestAgentConfig:
 
             # Should fallback to defaults
             assert config.log_level == "INFO"
-            assert config.max_react_steps == 10
+            assert config.max_react_steps == 20
             assert config.timeout == 30.0
 
     def test_validation_positive_values(self):
@@ -99,7 +99,7 @@ class TestAgentConfig:
         config = AgentConfig.create_default()
 
         assert isinstance(config, AgentConfig)
-        assert config.max_react_steps == 10
+        assert config.max_react_steps == 20
         assert config.debug_enabled is False
 
     def test_create_for_testing(self):
