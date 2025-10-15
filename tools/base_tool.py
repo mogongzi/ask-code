@@ -4,6 +4,7 @@ Base tool class for ReAct Rails agent tools.
 from __future__ import annotations
 
 import os
+import sys
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional
@@ -13,17 +14,21 @@ from rich.console import Console
 class BaseTool(ABC):
     """Abstract base class for all ReAct agent tools."""
 
-    def __init__(self, project_root: Optional[str] = None, debug: bool = False):
+    def __init__(self, project_root: Optional[str] = None, debug: bool = False, spinner=None):
         """
         Initialize the tool.
 
         Args:
             project_root: Root directory of the Rails project
             debug: Enable debug mode for the tool
+            spinner: Optional SpinnerManager instance to pause during debug logging
         """
         self.project_root = project_root
         self.console = Console()
+        # Use same console for debug logs but will clear spinner line before printing
+        self.debug_console = self.console
         self.debug_enabled = debug
+        self.spinner = spinner
 
     @property
     @abstractmethod
@@ -112,9 +117,22 @@ class BaseTool(ABC):
         return full_result
 
     def _debug_log(self, message: str, data: Any = None) -> None:
-        """Log debug information if debugging is enabled."""
-        if self.debug_enabled:
-            prefix = f"🔧 [{self.name}]"
+        """Log debug information if debugging is enabled.
+
+        Temporarily stops spinner before printing to avoid visual conflicts.
+        """
+        if not self.debug_enabled:
+            return
+
+        prefix = "🔧 "
+        spinner_was_active = False
+
+        # Stop spinner temporarily if it's running
+        if self.spinner and self.spinner.is_active():
+            spinner_was_active = True
+            self.spinner.stop()
+
+        try:
             if data is not None:
                 if isinstance(data, (dict, list)):
                     data_str = json.dumps(data, indent=2, default=str)[:2000]  # Truncate long data
@@ -124,10 +142,15 @@ class BaseTool(ABC):
                     data_str = str(data)[:2000]
                     if len(str(data)) > 2000:
                         data_str += "... [truncated]"
-                self.console.print(f"[dim cyan]{prefix} {message}[/dim cyan]")
-                self.console.print(f"[dim]{data_str}[/dim]")
+                self.debug_console.print(f"[dim cyan]{prefix}{message}[/dim cyan]")
+                self.debug_console.print(f"[dim]{data_str}[/dim]")
             else:
-                self.console.print(f"[dim cyan]{prefix} {message}[/dim cyan]")
+                self.debug_console.print(f"[dim cyan]{prefix}{message}[/dim cyan]")
+        finally:
+            # Restart spinner if it was active
+            if spinner_was_active and self.spinner:
+                tool_name = getattr(self, 'name', 'tool')
+                self.spinner.start(f"Running {tool_name}...")
 
     def _debug_input(self, input_params: Dict[str, Any]) -> None:
         """Log input parameters for debugging."""

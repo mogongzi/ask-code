@@ -113,8 +113,8 @@ class ToolExecutionService:
                 spinner_started = False
 
         try:
-            # Execute the tool
-            result_data = self.tool_executor.execute_tool(tool_name, tool_input)
+            # Execute the tool, passing spinner for debug logging coordination
+            result_data = self.tool_executor.execute_tool(tool_name, tool_input, spinner=self.spinner)
 
             # Extract result content (full version for LLM)
             result_content = result_data.get('content', '')
