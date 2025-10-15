@@ -129,7 +129,11 @@ class TransactionAnalyzer(BaseTool):
                 "model_analysis": model_analysis,
                 "source_code_findings": source_findings,
                 "visualization": self._create_flow_visualization(flow),
-                "callback_investigation_suggestions": callback_suggestions  # NEW: guide agent to investigate
+                "callback_investigation_suggestions": callback_suggestions,  # NEW: guide agent to investigate
+                "_metadata": {
+                    "cacheable": True,
+                    "cache_reason": "Large, stable transaction analysis result (10-100KB) used across multiple reasoning turns"
+                }
             }
 
         except Exception as e:

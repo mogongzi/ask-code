@@ -351,13 +351,17 @@ Input: {"pattern": "SELECT|WHERE|FROM", "file_types": ["rb", "erb"]}
         tool_result_blocks = []
         for tool_call in tool_calls_made:
             # tool_call is a ToolCall object
-            tool_result_blocks.append(
-                {
-                    "type": "tool_result",
-                    "tool_use_id": tool_call.id,
-                    "content": tool_call.result,
-                }
-            )
+            tool_result_block = {
+                "type": "tool_result",
+                "tool_use_id": tool_call.id,
+                "content": tool_call.result,
+            }
+
+            # Add cache_control for transaction_analyzer results (large, stable content)
+            if tool_call.name == "transaction_analyzer":
+                tool_result_block["cache_control"] = {"type": "ephemeral"}
+
+            tool_result_blocks.append(tool_result_block)
 
         return [
             {"role": "assistant", "content": tool_use_blocks},
