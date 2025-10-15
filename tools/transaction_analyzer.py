@@ -835,7 +835,7 @@ class TransactionAnalyzer(BaseTool):
                     summary_lines.append(f"    Callback: {suggestion['callback']}")
                     summary_lines.append(f"    Reason: {suggestion['reason']}")
                     # OPTIMIZATION: Suggest searching for method definition instead of reading entire file
-                    summary_lines.append(f"    📖 Use ripgrep to find 'def {suggestion['method_name']}' in {suggestion['model_file']}")
+                    summary_lines.append(f"    📖 Use ripgrep to locate 'def {suggestion['method_name']}' in {suggestion['model_file']}, then inspect the full method with file_reader if the snippet looks incomplete")
                 summary_lines.append("")
 
         # Source code findings
