@@ -18,13 +18,17 @@ class AgentToolExecutor:
     def __init__(self, tools: Mapping[str, BaseTool]):
         self.tools = dict(tools or {})
 
-    def execute_tool(self, tool_name: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+    def execute_tool(self, tool_name: str, parameters: Dict[str, Any], spinner=None) -> Dict[str, Any]:
         tool = self.tools.get(tool_name)
         if not tool:
             return {
                 "error": f"Unknown tool: {tool_name}",
                 "content": f"Tool '{tool_name}' is not available."
             }
+
+        # Inject spinner reference for debug logging
+        if spinner:
+            tool.spinner = spinner
 
         # Execute tool with debug logging if debug is enabled
         try:
@@ -39,6 +43,10 @@ class AgentToolExecutor:
         except Exception as e:  # pragma: no cover
             full_result = f"Error executing {tool_name}: {e}"
             compact_result = full_result
+        finally:
+            # Clear spinner reference after execution
+            if spinner:
+                tool.spinner = None
 
         # Format both versions
         try:
