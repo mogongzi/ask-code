@@ -161,19 +161,35 @@ class TransactionAnalyzer(BaseTool):
             elif ptype == "bulk_operation":
                 pattern_summary.append(f"Bulk: {p.get('count', 0)}x {p.get('table', 'unknown')}")
 
-        # Extract top source code finding
+        # Extract top source code finding (prioritize verified controller > transaction fingerprint)
         top_finding = None
         if findings:
+            # First try to find verified controller context (highest priority)
             for f in findings:
-                if f.get("search_strategy") == "transaction_fingerprint":
+                if f.get("search_strategy") == "controller_context_verification":
                     matches = f.get("search_results", {}).get("matches", [])
                     if matches:
                         top_finding = {
                             "file": matches[0]["file"],
                             "line": matches[0]["line"],
-                            "confidence": matches[0]["confidence"]
+                            "confidence": matches[0]["confidence"],
+                            "type": "verified_controller"
                         }
                         break
+
+            # Fall back to transaction fingerprint if no controller verification
+            if not top_finding:
+                for f in findings:
+                    if f.get("search_strategy") == "transaction_fingerprint":
+                        matches = f.get("search_results", {}).get("matches", [])
+                        if matches:
+                            top_finding = {
+                                "file": matches[0]["file"],
+                                "line": matches[0]["line"],
+                                "confidence": matches[0]["confidence"],
+                                "type": "transaction_wrapper"
+                            }
+                            break
 
         compact = {
             "summary": f"Transaction: {query_count} queries across {len(tables)} tables",
@@ -546,7 +562,9 @@ class TransactionAnalyzer(BaseTool):
                     "controller": ctrl,
                     "action": act,
                     "table": query.table,
-                    "likely_source": f"{ctrl.title().replace('_', '')}Controller#{act}"
+                    "inferred_context": f"{ctrl.title().replace('_', '')}Controller#{act}",
+                    "source_type": "sql_metadata",
+                    "warning": "Inferred from SQL comments - not verified against actual source code"
                 })
 
         flow.rails_patterns = patterns
@@ -566,6 +584,106 @@ class TransactionAnalyzer(BaseTool):
         except Exception:
             return 0.0
 
+    def _verify_controller_context(self, flow: TransactionFlow) -> List[Dict[str, Any]]:
+        """Verify controller context from SQL metadata by searching for actual controller files.
+
+        This converts SQL metadata hints like 'controller: work_pages, action: show_as_tab'
+        into verified source code locations.
+        """
+        findings = []
+
+        if not self.project_root:
+            return findings
+
+        # Extract controller context patterns from flow
+        controller_patterns = [p for p in flow.rails_patterns if p.get('pattern_type') == 'controller_context']
+
+        if not controller_patterns:
+            return findings
+
+        import subprocess
+        from pathlib import Path
+
+        # Deduplicate by controller#action
+        seen_contexts = set()
+
+        for pattern in controller_patterns:
+            controller = pattern.get('controller', '')
+            action = pattern.get('action', '')
+
+            context_key = f"{controller}#{action}"
+            if context_key in seen_contexts:
+                continue
+            seen_contexts.add(context_key)
+
+            # Search for controller file
+            # Rails convention: work_pages -> WorkPagesController in app/controllers/work_pages_controller.rb
+            controller_file_name = f"{controller}_controller.rb"
+
+            # Use ripgrep to find the controller file
+            try:
+                cmd = [
+                    "rg",
+                    "--type", "ruby",
+                    "--files-with-matches",
+                    controller_file_name,
+                    self.project_root
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+
+                if result.returncode == 0 and result.stdout.strip():
+                    controller_files = result.stdout.strip().split('\n')
+
+                    # Search for the action method in the controller file
+                    for controller_file in controller_files:
+                        full_path = Path(self.project_root) / controller_file
+
+                        # Search for "def action_name" in the controller file
+                        try:
+                            action_search_cmd = [
+                                "rg",
+                                "-n",
+                                f"def {action}",
+                                str(full_path)
+                            ]
+                            action_result = subprocess.run(action_search_cmd, capture_output=True, text=True, timeout=5)
+
+                            if action_result.returncode == 0:
+                                # Parse line number from output (format: "line:content")
+                                match = re.match(r'^(\d+):', action_result.stdout)
+                                line_num = int(match.group(1)) if match else 0
+
+                                findings.append({
+                                    "query": f"CONTROLLER ACTION: {controller}#{action}",
+                                    "sql": f"Verified from SQL metadata (controller: {controller}, action: {action})",
+                                    "search_results": {
+                                        "matches": [{
+                                            "file": str(Path(controller_file)),
+                                            "line": line_num,
+                                            "snippet": f"def {action}",
+                                            "confidence": "verified (found in actual controller file)",
+                                            "why": [
+                                                "SQL comment contained controller/action metadata",
+                                                f"Controller file: {controller_file_name}",
+                                                f"Action method: def {action}",
+                                                "This is the entry point that initiated the transaction"
+                                            ]
+                                        }]
+                                    },
+                                    "timestamp": flow.queries[0].timestamp if flow.queries else "",
+                                    "search_strategy": "controller_context_verification"
+                                })
+                                break  # Found the action, no need to check other files
+                        except Exception as e:
+                            self._debug_log(f"Error searching for action {action}: {e}")
+                            continue
+
+            except Exception as e:
+                self._debug_log(f"Error verifying controller context {controller}#{action}: {e}")
+                continue
+
+        return findings
+
     def _find_source_code(self, flow: TransactionFlow, max_patterns: int) -> List[Dict[str, Any]]:
         """Find transaction source code using multi-signal contextual search strategy.
 
@@ -575,6 +693,13 @@ class TransactionAnalyzer(BaseTool):
 
         if not self.project_root:
             return findings
+
+        # Strategy 0: Controller context verification (HIGHEST PRIORITY)
+        # If SQL contains controller/action metadata, try to verify it exists
+        controller_findings = self._verify_controller_context(flow)
+        if controller_findings:
+            findings.extend(controller_findings)
+            self._debug_log(f"Controller context verification found {len(controller_findings)} matches")
 
         # Strategy 1: Transaction fingerprint matching (PRIMARY)
         # Find the wrapping transaction block by matching table + column signatures
@@ -744,11 +869,11 @@ class TransactionAnalyzer(BaseTool):
         return associations[:5]
 
     def _extract_callback_suggestions(self, model_analysis: Dict[str, Any]) -> List[Dict[str, str]]:
-        """Extract suggestions for which callbacks to investigate further.
+        """Extract and verify callback methods with actual line numbers.
 
-        OPTIMIZATION: Limits to top 2 callbacks to reduce follow-up reads.
+        Returns VERIFIED callbacks with real file:line locations, not just suggestions.
         """
-        suggestions = []
+        verified_callbacks = []
 
         for table, info in model_analysis.items():
             callbacks = info.get('callbacks', [])
@@ -763,18 +888,90 @@ class TransactionAnalyzer(BaseTool):
                     # Extract method name from "after_save: method_name" format
                     if ':' in callback:
                         method_name = callback.split(':')[-1].strip()
-                        suggestions.append({
-                            'table': table,
-                            'model': info['model_name'],
-                            'model_file': model_file,
-                            'callback': callback,
-                            'method_name': method_name,
-                            'priority': 'high',
-                            'reason': 'Likely generates multiple queries (feed/audit/aggregate pattern)'
-                        })
 
-        # OPTIMIZATION: Return only top 2 most important (was 3)
-        return suggestions[:2]
+                        # Search for the CALLBACK DECLARATION line (not the method definition)
+                        # This finds where "after_save :method_name" is declared, which is what we want
+                        line_num = self._find_callback_declaration_line(model_file, callback)
+
+                        if line_num:
+                            # Only include if we found a real line number
+                            verified_callbacks.append({
+                                'table': table,
+                                'model': info['model_name'],
+                                'model_file': model_file,
+                                'callback': callback,
+                                'method_name': method_name,
+                                'line': line_num,  # Real line number of callback declaration!
+                                'priority': 'high',
+                                'reason': 'Likely generates multiple queries (feed/audit/aggregate pattern)',
+                                'verified': True
+                            })
+                        else:
+                            # Callback declaration not found - mark as unverified suggestion
+                            verified_callbacks.append({
+                                'table': table,
+                                'model': info['model_name'],
+                                'model_file': model_file,
+                                'callback': callback,
+                                'method_name': method_name,
+                                'line': None,
+                                'priority': 'high',
+                                'reason': 'Likely generates multiple queries (feed/audit/aggregate pattern)',
+                                'verified': False,
+                                'warning': 'Callback declaration not found in model file'
+                            })
+
+        # Return top 2 verified callbacks (or unverified if that's all we have)
+        return verified_callbacks[:2]
+
+    def _find_callback_declaration_line(self, model_file: str, callback_str: str) -> Optional[int]:
+        """Search for the callback declaration line (e.g., after_save :method_name) and return its line number.
+
+        This is different from finding the method definition - we want the line where the callback is registered,
+        not where the callback method is implemented.
+        """
+        if not self.project_root:
+            return None
+
+        import subprocess
+        from pathlib import Path
+
+        try:
+            full_path = Path(self.project_root) / model_file
+            if not full_path.exists():
+                return None
+
+            # Extract callback type and method name from callback_str
+            # Format: "after_save: method_name" or "after_create: method_name"
+            if ':' not in callback_str:
+                return None
+
+            callback_type, method_name = [part.strip() for part in callback_str.split(':', 1)]
+
+            # Search for the callback declaration, which can be in several formats:
+            # 1. after_save :method_name
+            # 2. after_save :method_name, ...
+            # 3. after_save do...end (skip these, not what we're looking for)
+
+            # Use ripgrep to find the callback declaration
+            # Match: after_save :method_name (with optional comma/other callbacks after)
+            cmd = [
+                "rg",
+                "-n",
+                f"{callback_type}.*:{method_name}\\b",
+                str(full_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+
+            if result.returncode == 0:
+                # Parse line number from first match (format: "line:content")
+                match = re.match(r'^(\d+):', result.stdout)
+                if match:
+                    return int(match.group(1))
+        except Exception as e:
+            self._debug_log(f"Error finding callback declaration {callback_str}: {e}")
+
+        return None
 
     def _generate_transaction_summary(self, flow: TransactionFlow, source_findings: List[Dict], model_analysis: Dict[str, Any] = None) -> str:
         """Generate a human-readable summary of the transaction."""
@@ -826,27 +1023,54 @@ class TransactionAnalyzer(BaseTool):
                         summary_lines.append(f"    - {assoc}")
                 summary_lines.append("")
 
-            # Add callback investigation suggestions
+            # Add callback findings (verified with real line numbers)
             callback_suggestions = self._extract_callback_suggestions(model_analysis)
             if callback_suggestions:
-                summary_lines.append("💡 SUGGESTED FOLLOW-UP: Investigate these callback implementations:")
-                for suggestion in callback_suggestions:
-                    summary_lines.append(f"  • {suggestion['model']}#{suggestion['method_name']}")
-                    summary_lines.append(f"    Callback: {suggestion['callback']}")
-                    summary_lines.append(f"    Reason: {suggestion['reason']}")
-                    # OPTIMIZATION: Suggest searching for method definition instead of reading entire file
-                    summary_lines.append(f"    📖 Use ripgrep to locate 'def {suggestion['method_name']}' in {suggestion['model_file']}, then inspect the full method with file_reader if the snippet looks incomplete")
-                summary_lines.append("")
+                verified_callbacks = [cb for cb in callback_suggestions if cb.get('verified')]
+                unverified_callbacks = [cb for cb in callback_suggestions if not cb.get('verified')]
+
+                # Show verified callbacks first
+                if verified_callbacks:
+                    summary_lines.append("✅ VERIFIED Callback Methods:")
+                    for cb in verified_callbacks:
+                        summary_lines.append(f"  • {cb['model']}#{cb['method_name']}")
+                        summary_lines.append(f"    📍 {cb['model_file']}:{cb['line']}")
+                        summary_lines.append(f"    Callback: {cb['callback']}")
+                        summary_lines.append(f"    Reason: {cb['reason']}")
+                    summary_lines.append("")
+
+                # Show unverified callbacks as suggestions
+                if unverified_callbacks:
+                    summary_lines.append("💡 SUGGESTED FOLLOW-UP (method definition not found):")
+                    for cb in unverified_callbacks:
+                        summary_lines.append(f"  • {cb['model']}#{cb['method_name']}")
+                        summary_lines.append(f"    Callback: {cb['callback']}")
+                        summary_lines.append(f"    ⚠️  {cb.get('warning', 'Not verified')}")
+                        summary_lines.append(f"    📖 Search manually in {cb['model_file']}")
+                    summary_lines.append("")
 
         # Source code findings
         if source_findings:
             summary_lines.append("=== Source Code Locations ===")
 
-            # Separate transaction wrapper findings from individual query findings
+            # Separate findings by strategy (priority order)
+            controller_findings = [f for f in source_findings if f.get('search_strategy') == 'controller_context_verification']
             transaction_findings = [f for f in source_findings if f.get('search_strategy') == 'transaction_fingerprint']
-            query_findings = [f for f in source_findings if f.get('search_strategy') != 'transaction_fingerprint']
+            query_findings = [f for f in source_findings if f.get('search_strategy') == 'individual_query']
 
-            # Show transaction wrapper findings first (highest priority)
+            # Show verified controller context first (HIGHEST priority - actual entry point)
+            if controller_findings:
+                summary_lines.append("✅ VERIFIED Controller Entry Point:")
+                for finding in controller_findings[:1]:  # Just show the main entry point
+                    if finding.get('search_results', {}).get('matches'):
+                        for match in finding['search_results']['matches'][:1]:
+                            summary_lines.append(f"  📍 {match.get('file', 'unknown')}:{match.get('line', '?')}")
+                            summary_lines.append(f"     Method: {match.get('snippet', 'N/A')}")
+                            summary_lines.append(f"     Confidence: {match.get('confidence', 'unknown')}")
+                            summary_lines.append(f"     Source: SQL metadata verified against actual controller file")
+                summary_lines.append("")
+
+            # Show transaction wrapper findings (high confidence code blocks)
             if transaction_findings:
                 summary_lines.append("🎯 Transaction Wrapper (High Confidence):")
                 for finding in transaction_findings[:2]:  # Top 2 transaction matches
@@ -855,7 +1079,13 @@ class TransactionAnalyzer(BaseTool):
                             summary_lines.append(f"  📍 {match.get('file', 'unknown')}:{match.get('line', '?')}")
                             summary_lines.append(f"     Confidence: {match.get('confidence', 'unknown')}")
                             if finding.get('matched_columns'):
-                                summary_lines.append(f"     Matched columns: {', '.join(finding['matched_columns'][:5])}")
+                                direct_cols = [c for c in finding['matched_columns'] if c not in match.get('polymorphic_columns', [])]
+                                poly_cols = match.get('polymorphic_columns', [])
+
+                                if direct_cols:
+                                    summary_lines.append(f"     Matched columns: {', '.join(direct_cols[:5])}")
+                                if poly_cols:
+                                    summary_lines.append(f"     Polymorphic columns: {', '.join(poly_cols)} (via association)")
                 summary_lines.append("")
 
             # Show individual query findings if available
@@ -867,6 +1097,15 @@ class TransactionAnalyzer(BaseTool):
                         for match in finding['search_results']['matches'][:2]:  # Top 2 matches per query
                             summary_lines.append(f"  - {match.get('file', 'unknown')}:{match.get('line', '?')}")
                 summary_lines.append("")
+
+        # Show inferred context separately (not verified)
+        inferred_contexts = [p for p in flow.rails_patterns if p.get('pattern_type') == 'controller_context']
+        if inferred_contexts and not any(f.get('search_strategy') == 'controller_context_verification' for f in source_findings):
+            summary_lines.append("💡 Inferred Context (from SQL metadata - not verified):")
+            for ctx in inferred_contexts[:1]:
+                summary_lines.append(f"  • SQL comments suggest: {ctx.get('inferred_context', 'unknown')}")
+                summary_lines.append(f"    ⚠️  {ctx.get('warning', 'Not verified against actual source code')}")
+            summary_lines.append("")
 
         return "\n".join(summary_lines)
 
@@ -895,39 +1134,58 @@ class TransactionAnalyzer(BaseTool):
             self._debug_log("Too few signature columns, skipping fingerprint matching")
             return findings
 
-        # Find candidate files with table + multiple column mentions
-        candidate_files = self._find_files_with_table_and_columns(
+        # Use ripgrep to find and score transaction blocks directly
+        # Dynamic threshold: scales with signature size
+        # - Small signatures (3-5 cols): require 60% match (2-3 columns)
+        # - Medium signatures (6-10 cols): require 40% match (3-4 columns)
+        # - Large signatures (11+ cols): require 33% match (4+ columns)
+        # Always require at least 3 columns to filter noise
+        min_threshold = max(3, int(len(signature_columns) * 0.4))
+        transaction_blocks = self._find_transaction_blocks_with_ripgrep(
             primary_insert.table,
             signature_columns,
-            min_column_matches=min(3, len(signature_columns) - 1)
+            min_column_matches=min(min_threshold, len(signature_columns) - 1)
         )
 
-        self._debug_log(f"Found {len(candidate_files)} candidate files")
+        self._debug_log(f"Found {len(transaction_blocks)} transaction blocks")
 
-        # Search for transaction blocks in candidate files
-        transaction_matches = self._search_transaction_blocks_in_files(
-            candidate_files,
-            primary_insert.table
-        )
+        # Convert blocks to findings format
+        for block in transaction_blocks:
+            # Calculate confidence level
+            raw_score = block.get('raw_score', block['score'])
+            confidence_level = "very high" if raw_score >= 5 else \
+                             "high" if raw_score >= 3 else "medium"
 
-        # Convert matches to findings format
-        for match in transaction_matches:
+            # Build detailed match explanation
+            why_lines = [
+                "Transaction block wrapping table operations",
+                f"Table: {primary_insert.table}",
+                f"Matched columns: {', '.join(block['matched_columns'][:5])}",
+                f"Column signature match: {raw_score}/{block['total_columns']}"
+            ]
+
+            # Add polymorphic association info if present
+            if block.get('polymorphic_columns'):
+                poly_cols = block['polymorphic_columns']
+                why_lines.append(f"Polymorphic columns (via association): {', '.join(poly_cols)}")
+
             findings.append({
                 "query": f"TRANSACTION wrapper for {primary_insert.table}",
                 "sql": f"ActiveRecord::Base.transaction (wrapping {len(flow.queries)} queries)",
                 "search_results": {
                     "matches": [{
-                        "file": match['file'],
-                        "line": match['line'],
-                        "snippet": match['snippet'],
-                        "confidence": match['confidence'],
-                        "why": match['why']
+                        "file": block['file'],
+                        "line": block['line'],
+                        "snippet": block['snippet'],
+                        "confidence": f"{confidence_level} ({raw_score}/{block['total_columns']} columns)",
+                        "why": why_lines,
+                        "polymorphic_columns": block.get('polymorphic_columns', [])
                     }]
                 },
                 "timestamp": flow.queries[0].timestamp if flow.queries else "",
                 "search_strategy": "transaction_fingerprint",
-                "column_matches": match.get('column_matches', 0),
-                "matched_columns": match.get('matched_columns', [])
+                "column_matches": block.get('score', 0),  # Use weighted score
+                "matched_columns": block.get('matched_columns', [])
             })
 
         return findings
@@ -954,141 +1212,267 @@ class TransactionAnalyzer(BaseTool):
         # Remove backticks and quotes, split by comma
         columns = [col.strip().strip('"`') for col in columns_str.split(',')]
 
-        # Filter out generic/common columns that appear in most tables
+        # Filter out columns that are truly auto-populated and never appear in Ruby code.
+        # This focuses the signature on distinctive business logic columns.
+        #
+        # Why filtering matters:
+        # Multiple code paths can create the same table record (e.g., PageView):
+        #   - lib/page_view_helper.rb: User viewing content (has referer, user_agent, more_info)
+        #   - lib/demo_scenario_actions.rb: Demo data (generic PageView without context)
+        #
+        # Without filtering, both match on common columns (member_id, company_id, action, etc.)
+        # making it hard to distinguish. Filtering focuses on distinctive attributes.
         generic_columns = {
-            'id', 'created_at', 'updated_at', 'deleted_at',
-            'company_id', 'member_id', 'group_id', 'owner_id',
-            'created_by', 'updated_by', 'deleted_by'
+            'id',           # Always auto-generated by database
+            'created_at',   # Rails timestamp, auto-populated
+            'updated_at',   # Rails timestamp, auto-populated
+            'deleted_at'    # Paranoia gem, auto-populated
         }
 
         signature_columns = [col for col in columns if col.lower() not in generic_columns]
+        return signature_columns
 
-        # Return top 8 most distinctive columns
-        return signature_columns[:8]
-
-    def _find_files_with_table_and_columns(
+    def _find_transaction_blocks_with_ripgrep(
         self, table_name: str, signature_columns: List[str], min_column_matches: int
     ) -> List[Dict[str, Any]]:
-        """Find files that mention both the table and multiple signature columns."""
+        """Extract and score transaction blocks using ripgrep directly.
+
+        This is much faster and more accurate than scanning entire files,
+        as it only searches within the 30-line transaction block context.
+        """
         if not self.project_root:
             return []
 
         import subprocess
         from pathlib import Path
 
-        # Search for files mentioning the table name or model name
         model_name = self._table_to_model_name(table_name)
-        table_pattern = f"({table_name}|{model_name})"
 
+        # Use ripgrep to find transaction blocks with 30 lines of context
         cmd = [
-            "rg", "-l", "-i",  # List files only, case insensitive
+            "rg",
             "--type", "ruby",
-            table_pattern,
+            "-n",  # Show line numbers
+            "-A", "30",  # Get 30 lines after (transaction body)
+            r"transaction\s+do",  # Match "transaction do"
             self.project_root
         ]
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
             if result.returncode not in (0, 1):
-                self._debug_log(f"Ripgrep failed: {result.stderr}")
+                self._debug_log(f"Ripgrep transaction search failed: {result.stderr}")
                 return []
 
-            files_with_table = result.stdout.strip().split('\n') if result.stdout.strip() else []
-            self._debug_log(f"Files mentioning {table_name}: {len(files_with_table)}")
+            output_lines = result.stdout.split('\n')
+            self._debug_log(f"Ripgrep found {len(output_lines)} lines in transaction blocks")
 
         except Exception as e:
-            self._debug_log(f"Error searching for table: {e}")
+            self._debug_log(f"Error running ripgrep: {e}")
             return []
 
-        # Score each file by how many signature columns it contains
-        scored_files = []
-        for file_path in files_with_table[:100]:  # Limit to 100 files
-            if not file_path:
+        # Parse ripgrep output into transaction blocks
+        # Format: "file:line:content" for match, "file:line-content" for context
+        blocks = []
+        current_block = None
+
+        for line in output_lines:
+            if not line.strip():
                 continue
 
-            try:
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read()
-
-                # Count signature column mentions
-                matched_columns = [col for col in signature_columns if col in content]
-                column_match_count = len(matched_columns)
-
-                if column_match_count >= min_column_matches:
-                    scored_files.append({
-                        'file': str(Path(file_path).relative_to(self.project_root)),
-                        'score': column_match_count,
-                        'matched_columns': matched_columns,
-                        'total_columns': len(signature_columns)
-                    })
-
-            except Exception as e:
-                self._debug_log(f"Error reading file {file_path}: {e}")
+            # Try to parse line: "file:line:content" or "file:line-content"
+            match = re.match(r'^([^:]+):(\d+)([-:])(.*)$', line)
+            if not match:
                 continue
 
-        # Sort by score (highest column match count first)
-        scored_files.sort(key=lambda x: x['score'], reverse=True)
+            file_path, line_num, separator, content = match.groups()
 
-        self._debug_log(f"High-confidence files with {min_column_matches}+ columns: {len(scored_files)}")
-        return scored_files[:10]  # Return top 10 candidates
+            # New block starts (separator is ':')
+            if separator == ':' and 'transaction' in content.lower():
+                if current_block:
+                    blocks.append(current_block)
+                current_block = {
+                    'file': file_path,
+                    'line': int(line_num),
+                    'content_lines': [content]
+                }
+            elif current_block:
+                # Continue current block (separator is '-')
+                current_block['content_lines'].append(content)
 
-    def _search_transaction_blocks_in_files(
-        self, candidate_files: List[Dict[str, Any]], table_name: str
-    ) -> List[Dict[str, Any]]:
-        """Search for transaction blocks within candidate files."""
+        # Don't forget the last block
+        if current_block:
+            blocks.append(current_block)
+
+        self._debug_log(f"Parsed {len(blocks)} transaction blocks")
+
+        # Extract polymorphic associations from the model
+        polymorphic_mappings = self._extract_polymorphic_associations(model_name)
+        self._debug_log(f"Polymorphic mappings for {model_name}: {polymorphic_mappings}")
+
+        # Score each block
+        scored_blocks = []
+        for block in blocks:
+            block_text = '\n'.join(block['content_lines'])
+
+            # Must mention the table or model name
+            if table_name.lower() not in block_text.lower() and model_name.lower() not in block_text.lower():
+                continue
+
+            # Count column matches ONLY within this block
+            matched_columns = []
+            for col in signature_columns:
+                # Match as symbol (:column), hash key (column:), or quoted string
+                pattern = rf'(:{col}\b|{col}:|[\'\"]{col}[\'"])'
+                if re.search(pattern, block_text):
+                    matched_columns.append(col)
+
+            # Check for polymorphic associations in this block
+            polymorphic_matched = []
+            for attr_name, (type_col, id_col) in polymorphic_mappings.items():
+                patterns = [
+                    rf':{attr_name}\s*=>',
+                    rf'{attr_name}:\s*\w',
+                    rf'[\'"]{attr_name}[\'"]?\s*=>',
+                ]
+                for pattern in patterns:
+                    if re.search(pattern, block_text):
+                        if type_col in signature_columns and type_col not in matched_columns:
+                            matched_columns.append(type_col)
+                            polymorphic_matched.append(type_col)
+                        if id_col in signature_columns and id_col not in matched_columns:
+                            matched_columns.append(id_col)
+                            polymorphic_matched.append(id_col)
+                        break
+
+            column_match_count = len(matched_columns)
+
+            # Apply bonus for distinctive columns
+            distinctive_columns = {'referer', 'user_agent', 'first_view'}
+            distinctive_matches = [c for c in matched_columns if c in distinctive_columns]
+            weighted_score = column_match_count + (len(distinctive_matches) * 0.5)
+
+            if column_match_count >= min_column_matches:
+                scored_blocks.append({
+                    'file': str(Path(block['file']).relative_to(self.project_root)),
+                    'line': block['line'],
+                    'snippet': block['content_lines'][0].strip() if block['content_lines'] else '',
+                    'score': weighted_score,
+                    'raw_score': column_match_count,
+                    'matched_columns': matched_columns,
+                    'polymorphic_columns': polymorphic_matched,
+                    'total_columns': len(signature_columns),
+                    'distinctive_matches': distinctive_matches,
+                    'context_preview': '\n'.join(block['content_lines'][:5])
+                })
+
+        # Sort by weighted score (highest first)
+        scored_blocks.sort(key=lambda x: x['score'], reverse=True)
+
+        self._debug_log(f"Scored {len(scored_blocks)} blocks with {min_column_matches}+ columns")
+        return scored_blocks[:10]  # Return top 10 blocks
+
+    def _extract_polymorphic_associations(self, model_name: str) -> Dict[str, Tuple[str, str]]:
+        """
+        Extract polymorphic association mappings from a Rails model.
+
+        Returns a dict mapping virtual attribute name to (type_column, id_column) tuple.
+        Example: {'content': ('key_type', 'key_id')}
+        """
         if not self.project_root:
-            return []
+            return {}
 
         from pathlib import Path
+        import re as regex_module
 
-        matches = []
+        # Convert PascalCase model name to snake_case filename (PageView -> page_view)
+        filename = regex_module.sub(r'(?<!^)(?=[A-Z])', '_', model_name).lower()
 
-        for candidate in candidate_files:
-            file_path = Path(self.project_root) / candidate['file']
+        # Find the model file
+        model_file = Path(self.project_root) / f"app/models/{filename}.rb"
+        if not model_file.exists():
+            return {}
 
-            try:
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    lines = f.readlines()
+        try:
+            with open(model_file, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
 
-                for i, line in enumerate(lines):
-                    # Look for transaction blocks
-                    if 'transaction do' in line.lower() or 'activerecord::base.transaction' in line.lower():
-                        # Get context (next 30 lines to see what's inside the transaction)
-                        context_end = min(i + 30, len(lines))
-                        context_lines = lines[i:context_end]
-                        context_text = ''.join(context_lines).lower()
+            # Pattern: belongs_to :content, :polymorphic => true, :foreign_key => :key_id, :foreign_type => :key_type
+            # Or: belongs_to :content, polymorphic: true, foreign_key: :key_id, foreign_type: :key_type
+            # IMPORTANT: Use [^\n]*? instead of .*? to prevent matching across multiple belongs_to lines
+            polymorphic_pattern = re.compile(
+                r'belongs_to\s+:(\w+)[^\n]*?polymorphic[^\n]*?'
+                r'foreign_key:\s*:(\w+)[^\n]*?'
+                r'foreign_type:\s*:(\w+)',
+                re.IGNORECASE
+            )
 
-                        # Check if this transaction mentions the table or model
-                        model_name = self._table_to_model_name(table_name)
-                        if table_name.lower() in context_text or model_name.lower() in context_text:
-                            # Calculate confidence based on column matches
-                            confidence_level = "very high" if candidate['score'] >= 5 else \
-                                             "high" if candidate['score'] >= 3 else "medium"
+            # Alternative pattern with hash rocket syntax
+            polymorphic_pattern_rocket = re.compile(
+                r'belongs_to\s+:(\w+)[^\n]*?:polymorphic\s*=>\s*true[^\n]*?'
+                r':foreign_key\s*=>\s*:(\w+)[^\n]*?'
+                r':foreign_type\s*=>\s*:(\w+)',
+                re.IGNORECASE
+            )
 
-                            matches.append({
-                                'file': candidate['file'],
-                                'line': i + 1,
-                                'snippet': line.strip(),
-                                'confidence': f"{confidence_level} ({candidate['score']}/{candidate['total_columns']} columns)",
-                                'why': [
-                                    "Transaction block wrapping table operations",
-                                    f"Table: {table_name}",
-                                    f"Matched columns: {', '.join(candidate['matched_columns'][:5])}",
-                                    f"Column signature match: {candidate['score']}/{candidate['total_columns']}"
-                                ],
-                                'column_matches': candidate['score'],
-                                'matched_columns': candidate['matched_columns'],
-                                'context_preview': ''.join(context_lines[:5])
-                            })
+            mappings = {}
 
-            except Exception as e:
-                self._debug_log(f"Error reading file {file_path}: {e}")
-                continue
+            # Try modern syntax first
+            for match in polymorphic_pattern.finditer(content):
+                attr_name, foreign_key, foreign_type = match.groups()
+                mappings[attr_name] = (foreign_type, foreign_key)
 
-        # Sort by confidence (column match count)
-        matches.sort(key=lambda x: x['column_matches'], reverse=True)
+            # Try hash rocket syntax
+            for match in polymorphic_pattern_rocket.finditer(content):
+                attr_name, foreign_key, foreign_type = match.groups()
+                mappings[attr_name] = (foreign_type, foreign_key)
 
-        return matches[:5]  # Return top 5 matches
+            return mappings
+
+        except Exception as e:
+            self._debug_log(f"Error reading model {model_name}: {e}")
+            return {}
+
+    def _detect_polymorphic_usage_in_file(
+        self, file_path: str, polymorphic_mappings: Dict[str, Tuple[str, str]]
+    ) -> List[str]:
+        """
+        Detect if a file uses any polymorphic associations.
+
+        Returns list of physical column names that are implicitly set via polymorphic associations.
+        Example: If file contains `:content => model_instance` and polymorphic_mappings has
+                 {'content': ('key_type', 'key_id')}, returns ['key_type', 'key_id']
+        """
+        if not polymorphic_mappings:
+            return []
+
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read()
+
+            matched_columns = []
+
+            for attr_name, (type_col, id_col) in polymorphic_mappings.items():
+                # Look for patterns like:
+                # :content => something
+                # content: something
+                # 'content' => something
+                patterns = [
+                    rf':{attr_name}\s*=>',
+                    rf'{attr_name}:\s*\w',
+                    rf'[\'"]{attr_name}[\'"]?\s*=>',
+                ]
+
+                for pattern in patterns:
+                    if re.search(pattern, content):
+                        matched_columns.extend([type_col, id_col])
+                        break  # Only count once per attribute
+
+            return list(set(matched_columns))  # Remove duplicates
+
+        except Exception as e:
+            self._debug_log(f"Error reading file {file_path}: {e}")
+            return []
 
     def _create_flow_visualization(self, flow: TransactionFlow) -> Dict[str, Any]:
         """Create a visual representation of the transaction flow.
