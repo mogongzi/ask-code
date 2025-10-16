@@ -1249,11 +1249,15 @@ class TransactionAnalyzer(BaseTool):
         model_name = self._table_to_model_name(table_name)
 
         # Use ripgrep to find transaction blocks with 30 lines of context
+        # IMPORTANT: Exclude test directories - tests don't generate production SQL
         cmd = [
             "rg",
             "--type", "ruby",
             "-n",  # Show line numbers
             "-A", "30",  # Get 30 lines after (transaction body)
+            "--glob", "!test/**",  # Exclude test/
+            "--glob", "!spec/**",  # Exclude spec/ (RSpec)
+            "--glob", "!features/**",  # Exclude features/ (Cucumber)
             r"transaction\s+do",  # Match "transaction do"
             self.project_root
         ]
@@ -1280,12 +1284,13 @@ class TransactionAnalyzer(BaseTool):
             if not line.strip():
                 continue
 
-            # Try to parse line: "file:line:content" or "file:line-content"
-            match = re.match(r'^([^:]+):(\d+)([-:])(.*)$', line)
+            # Try to parse line: "file:line:content" or "file-line-content"
+            # Ripgrep format: match lines use ":", context lines use "-"
+            match = re.match(r'^([^:]+?)([-:])(\d+)([-:])(.*)$', line)
             if not match:
                 continue
 
-            file_path, line_num, separator, content = match.groups()
+            file_path, _sep1, line_num, separator, content = match.groups()
 
             # New block starts (separator is ':')
             if separator == ':' and 'transaction' in content.lower():
@@ -1312,20 +1317,46 @@ class TransactionAnalyzer(BaseTool):
 
         # Score each block
         scored_blocks = []
+        blocks_passed_filter = 0
+        blocks_checked = 0
+
         for block in blocks:
             block_text = '\n'.join(block['content_lines'])
+            blocks_checked += 1
 
-            # Must mention the table or model name
-            if table_name.lower() not in block_text.lower() and model_name.lower() not in block_text.lower():
-                continue
+            # REMOVED: Overly strict model/table name filter
+            # The actual Ruby code might not mention "PageView" or "page_views" explicitly,
+            # but we can still find it by matching signature columns (member_id, referer, etc.)
+
+            blocks_passed_filter += 1
+
+            # Enhanced debug for ALL blocks that pass the filter (not just page_view_helper)
+            if blocks_passed_filter <= 3:  # Debug first 3 blocks
+                print(f"\n🔍 DEBUG Block #{blocks_passed_filter}: {block['file']}:{block['line']}")
+                print(f"   Block has {len(block['content_lines'])} lines captured")
+                print(f"   Block preview (first 800 chars):\n{block_text[:800]}")
+                print(f"   Searching for {len(signature_columns)} columns: {signature_columns[:5]}...")
 
             # Count column matches ONLY within this block
+            # IMPORTANT: Also search for association names (member_id -> member)
+            # because ActiveRecord associations use the association name, not the column name
             matched_columns = []
             for col in signature_columns:
                 # Match as symbol (:column), hash key (column:), or quoted string
                 pattern = rf'(:{col}\b|{col}:|[\'\"]{col}[\'"])'
                 if re.search(pattern, block_text):
                     matched_columns.append(col)
+                    if blocks_passed_filter <= 3:
+                        print(f"   ✓ Matched {col} (exact)")
+                # Also try association name for foreign keys (member_id -> member)
+                # SQL: member_id, Ruby: :member => @logged_in_user
+                elif col.endswith('_id'):
+                    assoc_name = col[:-3]  # Strip _id suffix
+                    assoc_pattern = rf'(:{assoc_name}\b|{assoc_name}:|[\'\"]{assoc_name}[\'"])'
+                    if re.search(assoc_pattern, block_text):
+                        matched_columns.append(col)
+                        if blocks_passed_filter <= 3:
+                            print(f"   ✓ Matched {col} via association :{assoc_name}")
 
             # Check for polymorphic associations in this block
             polymorphic_matched = []
@@ -1346,6 +1377,15 @@ class TransactionAnalyzer(BaseTool):
                         break
 
             column_match_count = len(matched_columns)
+
+            # Debug: Show match summary for first 3 blocks
+            if blocks_passed_filter <= 3:
+                print(f"   📊 Total matched: {column_match_count}/{len(signature_columns)} columns")
+                print(f"   Threshold: {min_column_matches} columns required")
+                if column_match_count < min_column_matches:
+                    print(f"   ❌ Block rejected (not enough matches)")
+                else:
+                    print(f"   ✅ Block ACCEPTED!")
 
             # Apply bonus for distinctive columns
             distinctive_columns = {'referer', 'user_agent', 'first_view'}
@@ -1369,6 +1409,7 @@ class TransactionAnalyzer(BaseTool):
         # Sort by weighted score (highest first)
         scored_blocks.sort(key=lambda x: x['score'], reverse=True)
 
+        self._debug_log(f"Blocks passed table/model filter: {blocks_passed_filter}")
         self._debug_log(f"Scored {len(scored_blocks)} blocks with {min_column_matches}+ columns")
         return scored_blocks[:10]  # Return top 10 blocks
 
