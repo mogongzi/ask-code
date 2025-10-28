@@ -20,6 +20,7 @@ from .components.sql_log_extractor import AdaptiveSQLExtractor, SQLType
 from .components.code_search_engine import CodeSearchEngine
 from .components.result_ranker import ResultRanker
 from .components.rails_pattern_matcher import RailsPatternMatcher
+from .components.sql_log_classifier import SQLLogClassifier
 from .semantic_sql_analyzer import (
     SemanticSQLAnalyzer,
     QueryAnalysis,
@@ -98,40 +99,34 @@ class EnhancedSQLRailsSearch(BaseTool):
             self._debug_output(error_result)
             return error_result
 
+        # Use SQLLogClassifier to detect transaction logs
+        classifier = SQLLogClassifier()
+        classification = classifier.classify(sql)
+
+        if classification.is_transaction():
+            error_result = {
+                "error": "Transaction log detected. Use transaction_analyzer tool instead.",
+                "suggestion": "This appears to be a complete transaction log with multiple queries. Use the transaction_analyzer tool to analyze the entire transaction flow and find related source code.",
+                "detected_queries": classification.query_count,
+                "classification_reason": classification.reason
+            }
+            self._debug_output(error_result)
+            return error_result
+
         # Pre-process: normalize SQL from logs if needed
         extracted_stmt: Optional[str] = None
         try:
             extractor = AdaptiveSQLExtractor()
             extracted = extractor.extract_all_sql(sql)
-            if extracted:
-                # Multiple statements -> likely a transaction log; hand off to transaction analyzer
-                if len(extracted) > 1 or extracted[0].sql_type == SQLType.TRANSACTION:
-                    error_result = {
-                        "error": "Transaction log detected. Use transaction_analyzer tool instead.",
-                        "suggestion": "This appears to be a complete transaction log with multiple queries. Use the transaction_analyzer tool to analyze the entire transaction flow and find related source code.",
-                        "detected_queries": len(extracted)
-                    }
-                    self._debug_output(error_result)
-                    return error_result
+            if extracted and len(extracted) == 1 and extracted[0].sql:
                 # Exactly one statement extracted -> normalize input SQL
-                if extracted[0].sql:
-                    extracted_stmt = extracted[0].sql.strip()
+                extracted_stmt = extracted[0].sql.strip()
         except Exception as e:
             # Fall back silently if preprocessing fails
             self._debug_log("Log preprocessing failed", str(e))
 
         if extracted_stmt:
             sql = extracted_stmt
-        else:
-            # Legacy detection for transaction-like logs
-            if self._is_transaction_log(sql):
-                error_result = {
-                    "error": "Transaction log detected. Use transaction_analyzer tool instead.",
-                    "suggestion": "This appears to be a complete transaction log with multiple queries. Use the transaction_analyzer tool to analyze the entire transaction flow and find related source code.",
-                    "detected_queries": self._count_queries_in_log(sql)
-                }
-                self._debug_output(error_result)
-                return error_result
 
         if not self.project_root or not Path(self.project_root).exists():
             error_result = {"error": "Project root not found"}
@@ -287,45 +282,6 @@ class EnhancedSQLRailsSearch(BaseTool):
         return usage_matches
 
     # Code search and ranking helpers moved to components
-
-    def _is_transaction_log(self, sql: str) -> bool:
-        """Check if the input appears to be a transaction log with multiple queries."""
-        lines = sql.strip().split('\n')
-
-        # Look for timestamp patterns typical of MySQL general log
-        timestamp_pattern = r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z\s+\d+\s+\w+'
-
-        # Count lines that look like log entries
-        log_lines = sum(1 for line in lines if re.match(timestamp_pattern, line.strip()))
-
-        # If we have multiple timestamped entries, it's likely a transaction log
-        if log_lines >= 3:
-            return True
-
-        # Also check for explicit transaction boundaries
-        has_begin = any('BEGIN' in line.upper() for line in lines)
-        has_commit = any('COMMIT' in line.upper() for line in lines)
-        multiple_queries = len([line for line in lines if any(op in line.upper() for op in ['SELECT', 'INSERT', 'UPDATE', 'DELETE'])]) >= 3
-
-        return has_begin and has_commit and multiple_queries
-
-    def _count_queries_in_log(self, sql: str) -> int:
-        """Count the number of SQL queries in a transaction log."""
-        lines = sql.strip().split('\n')
-        query_count = 0
-
-        for line in lines:
-            line_clean = line.strip()
-            # Skip empty lines
-            if not line_clean:
-                continue
-
-            # Look for SQL operations anywhere in the line (after timestamp)
-            line_upper = line_clean.upper()
-            if any(op in line_upper for op in ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'BEGIN', 'COMMIT']):
-                query_count += 1
-
-        return query_count
 
     def _find_definition_sites_semantic(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Intelligently search for Rails code using semantic analysis and adaptive strategies."""

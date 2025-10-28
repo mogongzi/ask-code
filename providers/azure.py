@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Dict, Iterator, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple, Union
 
 Event = Tuple[str, Optional[str]]  # ("model"|"text"|"tool_start"|"tool_input_delta"|"tool_ready"|"done"|"tokens", value)
 
@@ -104,7 +104,7 @@ def _build_openai_messages(messages: List[dict]) -> List[dict]:
     return openai_messages
 
 def build_payload(
-    messages: List[dict], *, model: Optional[str] = None, max_tokens: Optional[int] = None, temperature: Optional[float] = None, thinking: bool = False, tools: Optional[List[dict]] = None, context_content: Optional[str] = None, **_: dict
+    messages: List[dict], *, model: Optional[str] = None, max_tokens: Optional[int] = None, temperature: Optional[float] = None, thinking: bool = False, tools: Optional[List[dict]] = None, context_content: Optional[str] = None, system_prompt: Optional[Union[str, List[dict]]] = None, **_: dict
 ) -> dict:
     """Construct an Azure/OpenAI Chat Completions streaming payload.
 
@@ -124,11 +124,32 @@ def build_payload(
     # Build OpenAI-compatible messages
     openai_messages = _build_openai_messages(messages)
 
-    # Add system prompt if not already present
+    # Add system prompt (explicit if provided, else fallback)
     final_messages = openai_messages.copy()
-    if not openai_messages or openai_messages[0].get("role") != "system":
-        system_message = {"role": "system", "content": "Use Markdown formatting when appropriate."}
-        final_messages.insert(0, system_message)
+
+    def _stringify_system_prompt(sp: Optional[Union[str, List[dict]]]) -> Optional[str]:
+        if sp is None:
+            return None
+        if isinstance(sp, str):
+            return sp.strip() or None
+        if isinstance(sp, list):
+            parts: List[str] = []
+            for block in sp:
+                if isinstance(block, dict):
+                    text = block.get("text")
+                    if isinstance(text, str) and text.strip():
+                        parts.append(text.strip())
+                elif isinstance(block, str) and block.strip():
+                    parts.append(block.strip())
+            return "\n\n".join(parts) if parts else None
+        return None
+
+    system_content = _stringify_system_prompt(system_prompt)
+    if system_content:
+        final_messages.insert(0, {"role": "system", "content": system_content})
+    elif not openai_messages or openai_messages[0].get("role") != "system":
+        # Fallback minimal system guidance
+        final_messages.insert(0, {"role": "system", "content": "Use Markdown formatting when appropriate."})
 
     # Optionally inject context by prepending to the first user message content
     if context_content and context_content.strip():

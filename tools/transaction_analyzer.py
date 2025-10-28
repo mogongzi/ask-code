@@ -9,12 +9,14 @@ from __future__ import annotations
 import re
 import json
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 from .base_tool import BaseTool
-from .enhanced_sql_rails_search import EnhancedSQLRailsSearch
 from .components.sql_log_extractor import AdaptiveSQLExtractor, SQLType, ExtractedSQL
+from .components.sql_statement_analyzer import SQLStatementAnalyzer
+from .components.rails_code_locator import RailsCodeLocator
 from .semantic_sql_analyzer import SemanticSQLAnalyzer, QueryIntent
 from .components.rails_inflection import table_to_model
 from .model_analyzer import ModelAnalyzer
@@ -317,45 +319,14 @@ class TransactionAnalyzer(BaseTool):
         return flow
 
     def _extract_operation(self, sql: str) -> str:
-        """Extract the main SQL operation type (comment-aware)."""
-        sql_no_comments = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
-        sql_upper = sql_no_comments.upper().strip()
-
-        if sql_upper.startswith('SELECT'):
-            return 'SELECT'
-        elif sql_upper.startswith('INSERT'):
-            return 'INSERT'
-        elif sql_upper.startswith('UPDATE'):
-            return 'UPDATE'
-        elif sql_upper.startswith('DELETE'):
-            return 'DELETE'
-        elif sql_upper.startswith('BEGIN') or sql_upper.startswith('START TRANSACTION') or sql_upper.startswith('BEGIN TRANSACTION') or sql_upper.startswith('BEGIN WORK'):
-            return 'BEGIN'
-        elif sql_upper.startswith('COMMIT'):
-            return 'COMMIT'
-        elif sql_upper.startswith('ROLLBACK'):
-            return 'ROLLBACK'
-        else:
-            return 'OTHER'
+        """Extract the main SQL operation type using shared SQLStatementAnalyzer."""
+        analyzer = SQLStatementAnalyzer()
+        return analyzer.extract_operation(sql)
 
     def _extract_table(self, sql: str, operation: str) -> Optional[str]:
-        """Extract a primary table name from SQL (comment/backtick aware)."""
-        sql_no_comments = re.sub(r'/\*.*?\*/', '', sql, flags=re.DOTALL)
-        sql_clean = re.sub(r'`', '', sql_no_comments)
-
-        match = None
-        if operation == 'INSERT':
-            match = re.search(r'INSERT\s+INTO\s+(\w+)', sql_clean, re.IGNORECASE)
-        elif operation == 'SELECT':
-            match = re.search(r'FROM\s+(\w+)', sql_clean, re.IGNORECASE)
-        elif operation == 'UPDATE':
-            match = re.search(r'UPDATE\s+(\w+)', sql_clean, re.IGNORECASE)
-        elif operation == 'DELETE':
-            match = re.search(r'FROM\s+(\w+)', sql_clean, re.IGNORECASE)
-        else:
-            return None
-
-        return match.group(1) if match else None
+        """Extract a primary table name using shared SQLStatementAnalyzer."""
+        analyzer = SQLStatementAnalyzer()
+        return analyzer.extract_table(sql, operation)
 
     def _parse_timestamp_from_metadata(self, metadata: str) -> Optional[str]:
         """Extract ISO timestamp from the metadata prefix if present."""
@@ -601,9 +572,6 @@ class TransactionAnalyzer(BaseTool):
         if not controller_patterns:
             return findings
 
-        import subprocess
-        from pathlib import Path
-
         # Deduplicate by controller#action
         seen_contexts = set()
 
@@ -616,71 +584,33 @@ class TransactionAnalyzer(BaseTool):
                 continue
             seen_contexts.add(context_key)
 
-            # Search for controller file
-            # Rails convention: work_pages -> WorkPagesController in app/controllers/work_pages_controller.rb
-            controller_file_name = f"{controller}_controller.rb"
+            # Use RailsCodeLocator to find controller action
+            locator = RailsCodeLocator(self.project_root)
+            location = locator.find_controller_action(controller, action)
 
-            # Use ripgrep to find the controller file
-            try:
-                cmd = [
-                    "rg",
-                    "--type", "ruby",
-                    "--files-with-matches",
-                    controller_file_name,
-                    self.project_root
-                ]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-
-                if result.returncode == 0 and result.stdout.strip():
-                    controller_files = result.stdout.strip().split('\n')
-
-                    # Search for the action method in the controller file
-                    for controller_file in controller_files:
-                        full_path = Path(self.project_root) / controller_file
-
-                        # Search for "def action_name" in the controller file
-                        try:
-                            action_search_cmd = [
-                                "rg",
-                                "-n",
-                                f"def {action}",
-                                str(full_path)
+            if location:
+                findings.append({
+                    "query": f"CONTROLLER ACTION: {controller}#{action}",
+                    "sql": f"Verified from SQL metadata (controller: {controller}, action: {action})",
+                    "search_results": {
+                        "matches": [{
+                            "file": location.file,
+                            "line": location.line,
+                            "snippet": f"def {action}",
+                            "confidence": location.confidence,
+                            "why": [
+                                "SQL comment contained controller/action metadata",
+                                f"Controller file: {controller}_controller.rb",
+                                f"Action method: def {action}",
+                                "This is the entry point that initiated the transaction"
                             ]
-                            action_result = subprocess.run(action_search_cmd, capture_output=True, text=True, timeout=5)
-
-                            if action_result.returncode == 0:
-                                # Parse line number from output (format: "line:content")
-                                match = re.match(r'^(\d+):', action_result.stdout)
-                                line_num = int(match.group(1)) if match else 0
-
-                                findings.append({
-                                    "query": f"CONTROLLER ACTION: {controller}#{action}",
-                                    "sql": f"Verified from SQL metadata (controller: {controller}, action: {action})",
-                                    "search_results": {
-                                        "matches": [{
-                                            "file": str(Path(controller_file)),
-                                            "line": line_num,
-                                            "snippet": f"def {action}",
-                                            "confidence": "verified (found in actual controller file)",
-                                            "why": [
-                                                "SQL comment contained controller/action metadata",
-                                                f"Controller file: {controller_file_name}",
-                                                f"Action method: def {action}",
-                                                "This is the entry point that initiated the transaction"
-                                            ]
-                                        }]
-                                    },
-                                    "timestamp": flow.queries[0].timestamp if flow.queries else "",
-                                    "search_strategy": "controller_context_verification"
-                                })
-                                break  # Found the action, no need to check other files
-                        except Exception as e:
-                            self._debug_log(f"Error searching for action {action}: {e}")
-                            continue
-
-            except Exception as e:
-                self._debug_log(f"Error verifying controller context {controller}#{action}: {e}")
-                continue
+                        }]
+                    },
+                    "timestamp": flow.queries[0].timestamp if flow.queries else "",
+                    "search_strategy": "controller_context_verification"
+                })
+            else:
+                self._debug_log(f"Controller action not found: {controller}#{action}")
 
         return findings
 
@@ -708,46 +638,16 @@ class TransactionAnalyzer(BaseTool):
             findings.extend(transaction_findings)
             self._debug_log(f"Transaction wrapper search found {len(transaction_findings)} matches")
 
-        # Strategy 2: Individual query pattern matching (FALLBACK)
-        # If transaction search fails or finds too few results, fall back to per-query search
-        if len(findings) < 2:
-            enhanced_search = EnhancedSQLRailsSearch(self.project_root)
-            significant_queries = [q for q in flow.queries if q.operation in ['INSERT', 'UPDATE'] and q.table]
-
-            # OPTIMIZATION: Deduplicate by operation + table (avoid multiple INSERT audit_logs entries)
-            seen_query_types = set()
-
-            for query in significant_queries[:max_patterns]:
-                query_key = f"{query.operation}_{query.table}"
-
-                # Skip if we've already searched this operation + table combo
-                if query_key in seen_query_types:
-                    continue
-
-                seen_query_types.add(query_key)
-
-                try:
-                    search_result = enhanced_search.execute({
-                        "sql": query.sql,
-                        "include_usage_sites": False,
-                        "max_results": 3
-                    })
-
-                    if search_result and not search_result.get("error"):
-                        # OPTIMIZATION: Only include if matches found (skip "Found 0 matches")
-                        if search_result.get("summary", "").startswith("Found 0"):
-                            continue
-
-                        findings.append({
-                            "query": f"{query.operation} {query.table}",
-                            "sql": query.sql[:100] + "..." if len(query.sql) > 100 else query.sql,
-                            "search_results": search_result,
-                            "timestamp": query.timestamp,
-                            "search_strategy": "individual_query"
-                        })
-                except Exception as e:
-                    self._debug_log(f"Individual query search failed for {query.table}: {str(e)}")
-                    continue
+        # NOTE: Individual query pattern matching has been moved to orchestration layer.
+        #
+        # ARCHITECTURAL DECISION:
+        # Tools should NOT call other tools directly (violates independence principle).
+        # If transaction-level search finds insufficient matches, the orchestration layer
+        # (react_rails_agent.py) should decide to invoke enhanced_sql_rails_search for
+        # individual queries based on the transaction_analyzer output.
+        #
+        # This maintains clean separation: transaction_analyzer focuses on transaction flow,
+        # enhanced_sql_rails_search focuses on single queries, and the agent coordinates them.
 
         return findings
 
@@ -925,7 +825,7 @@ class TransactionAnalyzer(BaseTool):
         return verified_callbacks[:2]
 
     def _find_callback_declaration_line(self, model_file: str, callback_str: str) -> Optional[int]:
-        """Search for the callback declaration line (e.g., after_save :method_name) and return its line number.
+        """Search for the callback declaration line using shared RailsCodeLocator.
 
         This is different from finding the method definition - we want the line where the callback is registered,
         not where the callback method is implemented.
@@ -933,45 +833,21 @@ class TransactionAnalyzer(BaseTool):
         if not self.project_root:
             return None
 
-        import subprocess
-        from pathlib import Path
+        # Extract callback type and method name from callback_str
+        # Format: "after_save: method_name" or "after_create: method_name"
+        if ':' not in callback_str:
+            return None
 
-        try:
-            full_path = Path(self.project_root) / model_file
-            if not full_path.exists():
-                return None
+        callback_type, method_name = [part.strip() for part in callback_str.split(':', 1)]
 
-            # Extract callback type and method name from callback_str
-            # Format: "after_save: method_name" or "after_create: method_name"
-            if ':' not in callback_str:
-                return None
+        # Extract model name from file path for caching
+        model_name = Path(model_file).stem.title().replace('_', '')
 
-            callback_type, method_name = [part.strip() for part in callback_str.split(':', 1)]
+        # Use RailsCodeLocator to find callback
+        locator = RailsCodeLocator(self.project_root)
+        location = locator.find_callback(model_file, callback_type, method_name, model_name)
 
-            # Search for the callback declaration, which can be in several formats:
-            # 1. after_save :method_name
-            # 2. after_save :method_name, ...
-            # 3. after_save do...end (skip these, not what we're looking for)
-
-            # Use ripgrep to find the callback declaration
-            # Match: after_save :method_name (with optional comma/other callbacks after)
-            cmd = [
-                "rg",
-                "-n",
-                f"{callback_type}.*:{method_name}\\b",
-                str(full_path)
-            ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-
-            if result.returncode == 0:
-                # Parse line number from first match (format: "line:content")
-                match = re.match(r'^(\d+):', result.stdout)
-                if match:
-                    return int(match.group(1))
-        except Exception as e:
-            self._debug_log(f"Error finding callback declaration {callback_str}: {e}")
-
-        return None
+        return location.line if location else None
 
     def _generate_transaction_summary(self, flow: TransactionFlow, source_findings: List[Dict], model_analysis: Dict[str, Any] = None) -> str:
         """Generate a human-readable summary of the transaction."""

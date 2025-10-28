@@ -46,6 +46,16 @@ class CodeSearchEngine:
         return any(pattern in path_lower for pattern in test_patterns)
 
     def search(self, pattern: str, file_ext: str) -> List[Dict[str, Any]]:
+        """
+        Search for pattern in files with given extension.
+
+        Args:
+            pattern: Regex pattern to search for
+            file_ext: File extension (e.g., 'rb', 'erb')
+
+        Returns:
+            List of matches with file, line, and content
+        """
         if not self.project_root:
             if self.debug_log:
                 self.debug_log("❌ No project root set", None)
@@ -99,4 +109,226 @@ class CodeSearchEngine:
             if self.debug_log:
                 self.debug_log("❌ Ripgrep error", f"{type(e).__name__}: {e}")
             return []
+
+    def search_with_context(
+        self, pattern: str, file_ext: str, context_lines: int = 30
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for pattern with context lines after the match.
+
+        Useful for finding code blocks like transaction wrappers.
+
+        Args:
+            pattern: Regex pattern to search for
+            file_ext: File extension (e.g., 'rb')
+            context_lines: Number of lines to include after the match
+
+        Returns:
+            List of matches with file, line, content, and context_lines
+        """
+        if not self.project_root:
+            if self.debug_log:
+                self.debug_log("❌ No project root set", None)
+            return []
+
+        cmd = [
+            "rg",
+            "--line-number",
+            "--with-filename",
+            "-A", str(context_lines),  # Add context lines after match
+            "--type-add", f"target:*.{file_ext}",
+            "--type", "target",
+            "--glob", "!test/**",  # Exclude test directories
+            "--glob", "!spec/**",
+            "--glob", "!features/**",
+            pattern,
+            self.project_root,
+        ]
+
+        if self.debug_log:
+            self.debug_log("🔍 Executing ripgrep with context", {
+                "pattern": pattern,
+                "context_lines": context_lines,
+            })
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+            matches: List[Dict[str, Any]] = []
+
+            if result.returncode in (0, 1):
+                current_match = None
+                for line in result.stdout.splitlines():
+                    if not line.strip():
+                        continue
+
+                    # Parse ripgrep output format: "file:line:content" or "file-line-content"
+                    import re
+                    match = re.match(r'^([^:]+?)([-:])(\\d+)([-:])(.*)$', line)
+                    if not match:
+                        continue
+
+                    file_path, sep1, line_num, separator, content = match.groups()
+
+                    # New match starts (separator is ':')
+                    if separator == ':':
+                        if current_match:
+                            matches.append(current_match)
+                        rel_path = self._rel_path(file_path)
+                        if not self._is_test_file(rel_path):
+                            current_match = {
+                                "file": rel_path,
+                                "line": int(line_num),
+                                "content": content,
+                                "context_lines": []
+                            }
+                    elif current_match and separator == '-':
+                        # Context line (separator is '-')
+                        current_match["context_lines"].append(content)
+
+                # Don't forget last match
+                if current_match:
+                    matches.append(current_match)
+
+            if self.debug_log:
+                self.debug_log("📊 Ripgrep context results", {
+                    "matches_found": len(matches)
+                })
+
+            return matches
+        except Exception as e:
+            if self.debug_log:
+                self.debug_log("❌ Ripgrep context error", f"{type(e).__name__}: {e}")
+            return []
+
+    def find_controller_file(self, controller_name: str) -> Optional[Dict[str, str]]:
+        """
+        Find a Rails controller file by name.
+
+        Args:
+            controller_name: Controller name in snake_case (e.g., 'work_pages')
+
+        Returns:
+            Dict with 'file' and 'path' keys, or None if not found
+        """
+        if not self.project_root:
+            return None
+
+        controller_file_name = f"{controller_name}_controller.rb"
+
+        cmd = [
+            "rg",
+            "--files-with-matches",
+            "--type", "ruby",
+            controller_file_name,
+            self.project_root
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+
+            if result.returncode == 0 and result.stdout.strip():
+                file_path = result.stdout.strip().split('\n')[0]
+                rel_path = self._rel_path(file_path)
+
+                return {
+                    "file": rel_path,
+                    "path": file_path
+                }
+
+        except Exception as e:
+            if self.debug_log:
+                self.debug_log("❌ Controller file search error", str(e))
+
+        return None
+
+    def find_method_definition(self, file_path: str, method_name: str) -> Optional[int]:
+        """
+        Find the line number where a method is defined in a file.
+
+        Args:
+            file_path: Path to the file (absolute or relative to project_root)
+            method_name: Name of the method to find
+
+        Returns:
+            Line number where method is defined, or None if not found
+        """
+        if not self.project_root:
+            return None
+
+        # Resolve file path
+        full_path = Path(self.project_root) / file_path
+
+        if not full_path.exists():
+            return None
+
+        cmd = [
+            "rg",
+            "-n",
+            f"def {method_name}",
+            str(full_path)
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+
+            if result.returncode == 0:
+                # Parse line number from output (format: "line:content")
+                import re
+                match = re.match(r'^(\d+):', result.stdout)
+                if match:
+                    return int(match.group(1))
+
+        except Exception as e:
+            if self.debug_log:
+                self.debug_log("❌ Method definition search error", str(e))
+
+        return None
+
+    def find_callback_declaration(
+        self, model_file: str, callback_type: str, method_name: str
+    ) -> Optional[int]:
+        """
+        Find the line number where a callback is declared in a model file.
+
+        Example: Find "after_save :update_feed" declaration line.
+
+        Args:
+            model_file: Path to model file (relative to project_root)
+            callback_type: Callback type (e.g., 'after_save', 'after_create')
+            method_name: Method name referenced by callback
+
+        Returns:
+            Line number of callback declaration, or None if not found
+        """
+        if not self.project_root:
+            return None
+
+        full_path = Path(self.project_root) / model_file
+
+        if not full_path.exists():
+            return None
+
+        # Search for callback declaration: after_save :method_name
+        cmd = [
+            "rg",
+            "-n",
+            f"{callback_type}.*:{method_name}\\b",
+            str(full_path)
+        ]
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+
+            if result.returncode == 0:
+                # Parse line number from first match (format: "line:content")
+                import re
+                match = re.match(r'^(\d+):', result.stdout)
+                if match:
+                    return int(match.group(1))
+
+        except Exception as e:
+            if self.debug_log:
+                self.debug_log("❌ Callback declaration search error", str(e))
+
+        return None
 
