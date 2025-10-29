@@ -232,7 +232,36 @@ class ReActState:
                 # Common pattern: many tools return results with "matches" array
                 if "matches" in parsed:
                     matches = parsed.get("matches", [])
-                    return isinstance(matches, list) and len(matches) > 0
+
+                    # Check if we have matches
+                    if not (isinstance(matches, list) and len(matches) > 0):
+                        return False
+
+                    # For SQL search tools, verify matches are HIGH QUALITY not just partial
+                    if tool_name in ["enhanced_sql_rails_search", "ripgrep"]:
+                        # Check match quality indicators
+                        for match in matches:
+                            if isinstance(match, dict):
+                                # High confidence match
+                                if match.get("confidence") == "high":
+                                    logger.debug(f"Found high-confidence match in {tool_name}")
+                                    return True
+                                # Exact match context
+                                if match.get("context") == "exact_match":
+                                    logger.debug(f"Found exact match in {tool_name}")
+                                    return True
+                                # Match score above threshold
+                                score = match.get("score", 0)
+                                if isinstance(score, (int, float)) and score >= 0.8:
+                                    logger.debug(f"Found high-score match ({score}) in {tool_name}")
+                                    return True
+
+                        # If all matches are partial/low confidence, don't count as high quality
+                        logger.debug(f"All matches in {tool_name} are partial/low quality")
+                        return False
+
+                    # For other tools with matches, any match counts
+                    return True
 
                 # Common pattern: analysis tools return results with "analysis" or "methods"
                 if tool_name in ["model_analyzer", "controller_analyzer"]:

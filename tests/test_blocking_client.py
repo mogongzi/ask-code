@@ -26,7 +26,7 @@ class MockToolExecutor(ToolExecutor):
             "test_tool": lambda **kwargs: {"content": f"Executed test_tool with {kwargs}"}
         }
 
-    def execute_tool(self, tool_name: str, tool_input: dict) -> dict:
+    def execute_tool(self, tool_name: str, tool_input: dict, spinner=None) -> dict:
         """Execute a mock tool."""
         if tool_name in self.tools:
             result = self.tools[tool_name](**tool_input)

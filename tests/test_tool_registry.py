@@ -178,7 +178,7 @@ class TestToolRegistry:
         # Test known synonyms
         synonyms_to_test = [
             ('grep', 'ripgrep'),
-            ('sql_search', 'enhanced_sql_rails_search'),
+            ('sql_search', 'sql_rails_search'),  # Updated: now maps to unified SQL search tool
             ('astgrep', 'ast_grep')
         ]
 

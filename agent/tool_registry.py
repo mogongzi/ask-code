@@ -12,13 +12,12 @@ from dataclasses import dataclass
 
 from tools.base_tool import BaseTool
 from tools.ripgrep_tool import RipgrepTool
-from tools.enhanced_sql_rails_search import EnhancedSQLRailsSearch
+from tools.sql_rails_search import SQLRailsSearch
 from tools.ast_grep_tool import AstGrepTool
 from tools.model_analyzer import ModelAnalyzer
 from tools.controller_analyzer import ControllerAnalyzer
 from tools.route_analyzer import RouteAnalyzer
 from tools.migration_analyzer import MigrationAnalyzer
-from tools.transaction_analyzer import TransactionAnalyzer
 from tools.file_reader_tool import FileReaderTool
 
 
@@ -44,13 +43,12 @@ class ToolRegistry:
     # Core tool definitions with their classes
     CORE_TOOLS = {
         'ripgrep': RipgrepTool,
-        'enhanced_sql_rails_search': EnhancedSQLRailsSearch,
+        'sql_rails_search': SQLRailsSearch,  # Unified SQL search with intelligent routing
         'ast_grep': AstGrepTool,
         'model_analyzer': ModelAnalyzer,
         'controller_analyzer': ControllerAnalyzer,
         'route_analyzer': RouteAnalyzer,
         'migration_analyzer': MigrationAnalyzer,
-        'transaction_analyzer': TransactionAnalyzer,
         'file_reader': FileReaderTool,
     }
 
@@ -60,9 +58,13 @@ class ToolRegistry:
         'search_codebase': 'ripgrep',
         'code_search': 'ripgrep',
         'grep': 'ripgrep',
-        'sql_search': 'enhanced_sql_rails_search',
-        'trace_sql': 'enhanced_sql_rails_search',
-        'find_sql_source': 'enhanced_sql_rails_search',
+        # SQL search tool synonyms
+        'sql_search': 'sql_rails_search',
+        'trace_sql': 'sql_rails_search',
+        'find_sql_source': 'sql_rails_search',
+        'find_sql': 'sql_rails_search',
+        'sql_to_rails': 'sql_rails_search',
+        # Other tool synonyms
         'astgrep': 'ast_grep',
         'read_file': 'file_reader',
         'show_file': 'file_reader',
