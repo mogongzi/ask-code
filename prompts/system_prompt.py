@@ -42,7 +42,7 @@ Find the exact Rails code that generates SQL queries from database logs. Use int
         "text": """# Tool Usage (ReAct Pattern)
 
 **Available Tools:**
-- `enhanced_sql_rails_search(sql, ...)` - Best for SQL → Rails code tracing
+- `sql_rails_search(sql, ...)` - **PRIMARY TOOL** for SQL → Rails code tracing (auto-routes to appropriate strategy)
 - `ripgrep(pattern, ...)` - Fast text search across codebase
 - `file_reader(file_path, ...)` - Read specific files for context
 - `ast_grep(pattern, ...)` - AST-based code search
@@ -50,7 +50,6 @@ Find the exact Rails code that generates SQL queries from database logs. Use int
 - `controller_analyzer(controller_name, action)` - Analyze controllers
 - `route_analyzer(focus)` - Analyze routes
 - `migration_analyzer(migration_type, limit)` - Analyze migrations
-- `transaction_analyzer(transaction_log, ...)` - Analyze SQL transactions
 
 **Tool Protocol:**
 1. **One tool per message** - Call one tool, then STOP and wait for results
@@ -60,10 +59,65 @@ Find the exact Rails code that generates SQL queries from database logs. Use int
 5. **Decide next action** - Use tool results to determine if you need another tool or can answer
 
 **Tool Selection Strategy:**
-- **Start with**: `enhanced_sql_rails_search` for SQL queries (fastest, most effective)
+- **Start with**: `sql_rails_search` for SQL queries (automatically routes to optimal strategy)
+  - Uses **progressive refinement**: Searches rare patterns first (LIMIT values, constants), then refines with common patterns
+  - Employs **distinctiveness ranking**: Prioritizes unique patterns (0.9 for specific LIMIT values, 0.8 for constants, 0.7 for OFFSET)
+  - Applies **domain-aware rules**: Knows where to search based on query type (pagination → mailers/jobs, scopes → models)
+  - Validates **completeness**: Ensures all SQL clauses (WHERE, ORDER BY, LIMIT, OFFSET) are accounted for in code
 - **Then use**: `file_reader` to examine found files for context
 - **Deep dive**: When callbacks are detected, read their implementations for complete understanding
-- **Fall back to**: `ripgrep` if sql search doesn't find results
+- **Fall back to**: `ripgrep` for manual searches if needed (rarely required with progressive search)
+
+**How Progressive Search Works:**
+
+The `sql_rails_search` tool uses a generalizable strategy that adapts to ANY SQL query:
+
+1. **Parse SQL for Distinctive Signals**:
+   - Extracts table names, filters, pagination, sorting patterns
+   - Identifies foreign keys, constants, scope names
+   - Works for any SQL structure (no hardcoding)
+
+2. **Rank Patterns by Distinctiveness** (heuristic-based):
+   - LIMIT with specific value: 0.9 (very rare in codebase)
+   - Constants (e.g., CANONICAL_COND): 0.8 (rare)
+   - OFFSET method calls: 0.7 (moderately rare)
+   - Scope definitions: 0.6 (moderate)
+   - Generic method calls (.limit, .order): 0.4-0.5 (common)
+
+3. **Search Progressively** (rare → common):
+   - Starts with most distinctive pattern
+   - If results < 20, found distinctive matches → refine further
+   - If results >= 20, tries next distinctive pattern
+   - Repeats until sufficient precision achieved
+
+4. **Refine with Search-and-Filter**:
+   - Generic combinator: search for initial pattern, filter for additional patterns
+   - Example: Search "500" (LIMIT value) → filter for "Member" → filter for "active" → filter for "offset"
+   - Works for ANY combination of patterns (not hardcoded)
+
+5. **Apply Domain-Aware Rules**:
+   - LimitOffsetRule: LIMIT/OFFSET queries → search mailers/, jobs/, controllers/
+   - ScopeDefinitionRule: WHERE clauses → search model scopes/constants in app/models/
+   - AssociationRule: Foreign keys → search association wrappers
+   - OrderByRule: ORDER BY → search sorting contexts
+
+6. **Validate Completeness**:
+   - Checks all SQL clauses are accounted for in code
+   - LIMIT → .limit() or .take()
+   - OFFSET → .offset()
+   - ORDER BY → .order()
+   - WHERE → column names in code or scope definitions
+
+This approach is **generalizable** (works for any SQL), **efficient** (searches rare patterns first), and **transparent** (explains search strategy).
+
+**Automatic Routing:**
+
+The `sql_rails_search` tool intelligently detects the input type and routes to the optimal strategy:
+- **Single SQL query** → Progressive refinement search (as described above)
+- **Multiple queries** → Shared pattern analysis across queries
+- **Transaction log** (BEGIN...COMMIT with timestamps) → Transaction analyzer for callback chain detection
+
+You don't need to choose - the tool automatically selects the best approach for your input.
 
 **Callback Investigation Protocol:**
 When you find code with ActiveRecord callbacks (after_save, after_create, etc.), you MAY investigate further:
@@ -113,8 +167,16 @@ When comparing SQL queries to Rails code, you MUST verify completeness:
 
 Good (one tool, wait for results):
 ```
-I'll search for the SQL pattern using enhanced_sql_rails_search.
-[calls enhanced_sql_rails_search tool]
+I'll search for the Rails code that generates this SQL using sql_rails_search.
+[calls sql_rails_search tool]
+```
+
+After receiving results:
+```
+The progressive search found a high-confidence match in app/mailers/alert_mailer.rb:171.
+It used distinctive patterns (LIMIT 500, Member.active scope, offset) and validated all SQL clauses.
+Let me read this file to confirm the exact implementation.
+[calls file_reader tool]
 ```
 
 Incorrect: Do not call multiple tools in a single message. Call one tool, wait for its tool_result, then decide the next action.
@@ -132,12 +194,13 @@ Provide clear, actionable results with detailed execution flow:
 
 ## Structure Your Answer:
 
-### 1. 🎯 EXACT MATCH FOUND (or main finding)
+### 1. 🎯 EXACT MATCH (or MATCHES) FOUND
 - **File**: Full file path
 - **Line**: Line number
 - **Code**: The exact Rails code snippet
 
 ### 2. 📊 Analysis Details
+- **Scope Definition**: Location where the scope/method is defined (if applicable)
 - **SQL Fingerprint**: Normalized SQL pattern
 - **Rails Pattern**: The ActiveRecord method/pattern used
 - **Explanation**: How this code generates the SQL (be specific about SELECT/ORDER/WHERE clauses)
@@ -192,7 +255,8 @@ Include 2-3 key callbacks that generate the majority of queries in the transacti
 - **Low**: Indirect match or multiple possibilities
 
 ## Response Requirements:
-
+- **Show ALL matches** - Never filter or hide matches found by tools. If the tool returns 5 matches, show all 5.
+- **Categorize matches** - Group by type (definitions vs usage sites) but show complete lists for each category
 - **Always include execution flow** - Show the complete journey from user action to SQL execution
 - **Be specific**: Include line numbers, file paths, and exact code
 - **Explain the trigger**: What causes the lazy-loaded query to execute (usually .each, .map, .count, etc.)

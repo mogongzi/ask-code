@@ -21,6 +21,7 @@ from .components.code_search_engine import CodeSearchEngine
 from .components.result_ranker import ResultRanker
 from .components.rails_pattern_matcher import RailsPatternMatcher
 from .components.sql_log_classifier import SQLLogClassifier
+from .components.progressive_search_engine import ProgressiveSearchEngine
 from .semantic_sql_analyzer import (
     SemanticSQLAnalyzer,
     QueryAnalysis,
@@ -49,6 +50,12 @@ class EnhancedSQLRailsSearch(BaseTool):
         self.search_engine = CodeSearchEngine(project_root=self.project_root, debug_log=self._debug_log)
         self.ranker = ResultRanker()
         self.pattern_matcher = RailsPatternMatcher()
+        # New: Progressive search engine with domain-aware rules
+        self.progressive_search = ProgressiveSearchEngine(
+            code_search_engine=self.search_engine,
+            project_root=self.project_root or "",
+            debug=debug
+        )
 
     @property
     def name(self) -> str:
@@ -284,26 +291,34 @@ class EnhancedSQLRailsSearch(BaseTool):
     # Code search and ranking helpers moved to components
 
     def _find_definition_sites_semantic(self, analysis: QueryAnalysis) -> List[SQLMatch]:
-        """Intelligently search for Rails code using semantic analysis and adaptive strategies."""
+        """
+        Intelligently search for Rails code using progressive refinement.
+
+        Uses the new ProgressiveSearchEngine with domain-aware rules
+        instead of hardcoded strategy methods.
+        """
         if not analysis.primary_model or not self.project_root:
             return []
 
-        # Use multiple adaptive search strategies
-        strategies = [
-            self._strategy_direct_patterns,
-            self._strategy_scope_based,  # New: search for scope definitions and usage
-            self._strategy_intent_based,
-            self._strategy_association_based,
-            self._strategy_validation_based,
-            self._strategy_callback_based
-        ]
+        # Use progressive search with domain rules (NEW APPROACH)
+        search_results = self.progressive_search.search_progressive(
+            sql_analysis=analysis,
+            max_results=20  # Get more results for ranking
+        )
 
-        all_matches = []
-        for strategy in strategies:
-            matches = strategy(analysis)
-            all_matches.extend(matches)
+        # Convert ProgressiveSearch results to SQLMatch format
+        matches = []
+        for result in search_results:
+            matches.append(SQLMatch(
+                path=result.file,
+                line=result.line,
+                snippet=result.content,
+                why=result.why,
+                confidence=f"{result.confidence:.2f}",
+                match_type="definition"
+            ))
 
-        return all_matches
+        return matches
 
     def _strategy_direct_patterns(self, analysis: QueryAnalysis) -> List[SQLMatch]:
         """Search for direct Rails patterns inferred from the query."""

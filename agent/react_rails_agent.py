@@ -258,6 +258,15 @@ class ReactRailsAgent:
                     self.state_machine.record_observation(result_text, result_text)
                     self.logger.log_react_step("observation", step_num, result_text)
 
+                    # Check if tool returned an error
+                    if self._tool_result_has_error(result_text):
+                        error_msg = self._extract_tool_error(result_text)
+                        self.logger.error(f"Tool {tool_name} returned error: {error_msg}")
+                        self.state_machine.state.stop_with_reason(
+                            f"Tool execution failed: {error_msg}"
+                        )
+                        return True  # Stop immediately
+
         # Check for stuck state: no tool calls for multiple consecutive steps
         if self.state_machine.state.is_stuck_without_tools(max_consecutive_no_tools=2):
             self.logger.warning(
@@ -277,7 +286,7 @@ class ReactRailsAgent:
 
         # Check for timeout after finalization request
         if self.state_machine.state.is_stuck_after_finalization(
-            max_steps_after_finalization=2
+            max_steps_after_finalization=5  # Allow more steps for complex workflows like SQL tracing
         ):
             self.logger.warning(f"Finalization timeout at step {step_num}")
             # Use the last meaningful response as answer
@@ -498,6 +507,46 @@ class ReactRailsAgent:
         else:
             self.logger.error(f"Unexpected error: {error}", exc_info=True)
             return f"Unexpected error during analysis: {error}"
+
+    def _tool_result_has_error(self, result_text: str) -> bool:
+        """
+        Check if a tool result contains an error.
+
+        Args:
+            result_text: The tool result (JSON string)
+
+        Returns:
+            True if the result contains an error, False otherwise
+        """
+        import json
+
+        try:
+            result_obj = json.loads(result_text)
+            return isinstance(result_obj, dict) and "error" in result_obj
+        except (json.JSONDecodeError, TypeError):
+            # Not JSON or can't parse - assume no error
+            return False
+
+    def _extract_tool_error(self, result_text: str) -> str:
+        """
+        Extract the error message from a tool result.
+
+        Args:
+            result_text: The tool result (JSON string)
+
+        Returns:
+            The error message, or a default message if extraction fails
+        """
+        import json
+
+        try:
+            result_obj = json.loads(result_text)
+            if isinstance(result_obj, dict) and "error" in result_obj:
+                return str(result_obj["error"])
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        return "Unknown error"
 
     def set_project_root(self, project_root: str) -> None:
         """

@@ -198,11 +198,11 @@ def repl(
         # Create agent configuration
         config = AgentConfig(
             project_root=project_root,
-            max_react_steps=15,  # Generous limit for thorough analysis
+            max_react_steps=25,  # Higher limit for complex SQL tracing workflow (7 steps + margin)
             debug_enabled=verbose,
             log_level="DEBUG" if verbose else "WARNING",
             tool_repetition_limit=4,  # Allow some repetition but prevent loops
-            finalization_threshold=3,  # Request finalization after good results
+            finalization_threshold=7,  # Allow more steps for complex SQL tracing workflow
         )
 
         react_agent = ReactRailsAgent(config=config, session=session)

@@ -332,3 +332,102 @@ class CodeSearchEngine:
 
         return None
 
+    def search_multi_pattern(
+        self, initial_pattern: str, filter_patterns: List[str], file_ext: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Search-and-filter: Search for initial pattern, then filter for additional patterns.
+
+        This is a GENERIC search combinator that works for ANY patterns,
+        not hardcoded for specific cases.
+
+        Example usage:
+        - search_multi_pattern("Member.active", ["offset", "limit"], "rb")
+          Finds lines with "Member.active" that also contain "offset" and "limit"
+
+        - search_multi_pattern("500", ["Member", "active"], "rb")
+          Finds lines with "500" that also contain "Member" and "active"
+
+        This implements progressive refinement WITHOUT hardcoding patterns.
+
+        Args:
+            initial_pattern: First pattern to search for (most distinctive)
+            filter_patterns: Additional patterns to filter by (all must be present)
+            file_ext: File extension to search in
+
+        Returns:
+            List of matches that contain ALL patterns
+        """
+        # Step 1: Search for initial pattern
+        initial_results = self.search(initial_pattern, file_ext)
+
+        if self.debug_log:
+            self.debug_log("🔍 Search-and-filter", {
+                "initial_pattern": initial_pattern,
+                "initial_matches": len(initial_results),
+                "filter_patterns": filter_patterns
+            })
+
+        # Step 2: Filter results for additional patterns
+        filtered_results = []
+
+        for result in initial_results:
+            content = result.get("content", "").lower()
+
+            # Check if ALL filter patterns are present
+            all_match = all(
+                filter_pattern.lower() in content
+                for filter_pattern in filter_patterns
+            )
+
+            if all_match:
+                # Tag with matched patterns for debugging
+                result["matched_patterns"] = [initial_pattern] + filter_patterns
+                filtered_results.append(result)
+
+        if self.debug_log:
+            self.debug_log("✓ Filtered results", {
+                "filtered_matches": len(filtered_results)
+            })
+
+        return filtered_results
+
+    def search_combined(
+        self, patterns: List[str], file_ext: str, match_mode: str = "all"
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for multiple patterns and combine results.
+
+        Args:
+            patterns: List of patterns to search for
+            file_ext: File extension to search in
+            match_mode: "all" (all patterns must match) or "any" (at least one)
+
+        Returns:
+            List of matches based on match_mode
+        """
+        if not patterns:
+            return []
+
+        if match_mode == "all":
+            # Use search_multi_pattern for AND logic
+            return self.search_multi_pattern(patterns[0], patterns[1:], file_ext)
+
+        elif match_mode == "any":
+            # OR logic: combine results from all patterns
+            all_results = []
+            seen = set()
+
+            for pattern in patterns:
+                results = self.search(pattern, file_ext)
+                for result in results:
+                    key = f"{result.get('file', '')}:{result.get('line', 0)}"
+                    if key not in seen:
+                        seen.add(key)
+                        all_results.append(result)
+
+            return all_results
+
+        else:
+            raise ValueError(f"Invalid match_mode: {match_mode}. Use 'all' or 'any'.")
+

@@ -89,6 +89,7 @@ class QueryAnalysis:
     aggregations: List[str] = field(default_factory=list)
     subqueries: List['QueryAnalysis'] = field(default_factory=list)
     has_limit: bool = False
+    has_offset: bool = False
     has_order: bool = False
     complexity: str = "low"
     rails_patterns: List[str] = field(default_factory=list)
@@ -244,6 +245,10 @@ class SemanticSQLAnalyzer:
                 analysis.has_limit = True
                 # Don't override data_retrieval intent just because of LIMIT
                 # Only override if it's clearly a SELECT 1 existence check
+
+            # Check for OFFSET
+            if parsed.find(exp.Offset):
+                analysis.has_offset = True
 
             # Check for ORDER BY
             if parsed.find(exp.Order):
