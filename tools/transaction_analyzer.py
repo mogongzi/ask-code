@@ -84,6 +84,13 @@ class TransactionAnalyzer(BaseTool):
             "required": ["transaction_log"]
         }
 
+    def __init__(self, project_root: Optional[str] = None, debug: bool = False, spinner=None):
+        """Initialize transaction analyzer with reusable component instances."""
+        super().__init__(project_root, debug, spinner)
+        # Reuse component instances to enable caching and reduce overhead
+        self.sql_analyzer = SQLStatementAnalyzer()
+        self.code_locator = RailsCodeLocator(self.project_root) if self.project_root else None
+
     def execute(self, input_params: Dict[str, Any]) -> Any:
         if not self.validate_input(input_params):
             return {"error": "Invalid input"}
@@ -320,13 +327,11 @@ class TransactionAnalyzer(BaseTool):
 
     def _extract_operation(self, sql: str) -> str:
         """Extract the main SQL operation type using shared SQLStatementAnalyzer."""
-        analyzer = SQLStatementAnalyzer()
-        return analyzer.extract_operation(sql)
+        return self.sql_analyzer.extract_operation(sql)
 
     def _extract_table(self, sql: str, operation: str) -> Optional[str]:
         """Extract a primary table name using shared SQLStatementAnalyzer."""
-        analyzer = SQLStatementAnalyzer()
-        return analyzer.extract_table(sql, operation)
+        return self.sql_analyzer.extract_table(sql, operation)
 
     def _parse_timestamp_from_metadata(self, metadata: str) -> Optional[str]:
         """Extract ISO timestamp from the metadata prefix if present."""
@@ -585,8 +590,9 @@ class TransactionAnalyzer(BaseTool):
             seen_contexts.add(context_key)
 
             # Use RailsCodeLocator to find controller action
-            locator = RailsCodeLocator(self.project_root)
-            location = locator.find_controller_action(controller, action)
+            if not self.code_locator:
+                continue
+            location = self.code_locator.find_controller_action(controller, action)
 
             if location:
                 findings.append({
@@ -844,8 +850,9 @@ class TransactionAnalyzer(BaseTool):
         model_name = Path(model_file).stem.title().replace('_', '')
 
         # Use RailsCodeLocator to find callback
-        locator = RailsCodeLocator(self.project_root)
-        location = locator.find_callback(model_file, callback_type, method_name, model_name)
+        if not self.code_locator:
+            return None
+        location = self.code_locator.find_callback(model_file, callback_type, method_name, model_name)
 
         return location.line if location else None
 
