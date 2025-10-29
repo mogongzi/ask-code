@@ -431,3 +431,108 @@ class CodeSearchEngine:
         else:
             raise ValueError(f"Invalid match_mode: {match_mode}. Use 'all' or 'any'.")
 
+    def search_file_level_filter(
+        self, initial_pattern: str, filter_patterns: List[str], file_ext: str
+    ) -> List[Dict[str, Any]]:
+        """
+        File-level search-and-filter: Find files matching initial pattern, then filter
+        files that also contain all filter patterns.
+
+        This is more effective than line-level filtering because refinement patterns
+        may appear on different lines than the initial pattern.
+
+        Example:
+        - Initial: "500" finds 1650 lines across 200 files
+        - File-level filter: Keep only files containing ".limit(" → 15 files
+        - File-level filter: Keep only files containing "Member" → 3 files
+        - Return all matching lines from those 3 files
+
+        Args:
+            initial_pattern: First pattern to search for (most distinctive)
+            filter_patterns: Additional patterns that must exist in the same FILE
+            file_ext: File extension to search in
+
+        Returns:
+            List of matches from files containing ALL patterns
+        """
+        if not self.project_root:
+            return []
+
+        # Step 1: Find all files containing initial pattern
+        initial_results = self.search(initial_pattern, file_ext)
+
+        if not initial_results:
+            return []
+
+        # Group results by file
+        files_with_matches = {}
+        for result in initial_results:
+            file_path = result.get("file", "")
+            if file_path not in files_with_matches:
+                files_with_matches[file_path] = []
+            files_with_matches[file_path].append(result)
+
+        if self.debug_log:
+            self.debug_log("🗂️ File-level filtering", {
+                "initial_pattern": initial_pattern,
+                "initial_files": len(files_with_matches),
+                "initial_lines": len(initial_results),
+                "filter_patterns": filter_patterns
+            })
+
+        # Step 2: For each file, check if it contains ALL filter patterns
+        matching_files = []
+
+        for file_path in files_with_matches.keys():
+            # Search for each filter pattern in this specific file
+            file_matches_all = True
+            full_path = Path(self.project_root) / file_path
+
+            if not full_path.exists():
+                continue
+
+            try:
+                # Read file content once
+                with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    file_content = f.read().lower()
+
+                # Check if all filter patterns exist in this file
+                for filter_pattern in filter_patterns:
+                    # Try regex match first, fall back to substring
+                    import re
+                    try:
+                        if not re.search(filter_pattern, file_content, re.IGNORECASE):
+                            file_matches_all = False
+                            break
+                    except re.error:
+                        # Invalid regex, use substring match
+                        if filter_pattern.lower() not in file_content:
+                            file_matches_all = False
+                            break
+
+                if file_matches_all:
+                    matching_files.append(file_path)
+
+            except Exception as e:
+                if self.debug_log:
+                    self.debug_log("⚠️ File read error", f"{file_path}: {e}")
+                continue
+
+        if self.debug_log:
+            self.debug_log("✓ Files after filtering", {
+                "matching_files": len(matching_files),
+                "files": matching_files[:5] if matching_files else []
+            })
+
+        # Step 3: Return all matching lines from filtered files
+        filtered_results = []
+        for file_path in matching_files:
+            # Get all original matches from this file
+            file_results = files_with_matches.get(file_path, [])
+            for result in file_results:
+                # Tag with matched patterns
+                result["matched_patterns"] = [initial_pattern] + filter_patterns
+                filtered_results.append(result)
+
+        return filtered_results
+

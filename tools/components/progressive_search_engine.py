@@ -151,7 +151,7 @@ class ProgressiveSearchEngine:
         Strategy:
         1. Start with most distinctive pattern
         2. If results < threshold (e.g., 10), we found distinctive matches
-        3. Refine those results by filtering for additional patterns
+        3. Refine those results by filtering for additional patterns (FILE-LEVEL)
         4. If too many results, try next distinctive pattern
         5. Repeat until sufficient matches found or patterns exhausted
 
@@ -179,19 +179,20 @@ class ProgressiveSearchEngine:
                 print(f"      Found {len(pattern_results)} initial matches")
 
             # If this is a distinctive pattern (or moderate) and we have results, refine them
-            # Updated logic: refine even with many results if pattern has some distinctiveness
+            # Updated logic: Use FILE-LEVEL refinement for many results
             if pattern.distinctiveness >= 0.4 and len(pattern_results) > 0:
                 if len(pattern_results) < 20:
                     if self.debug:
                         print(f"      ✓ Found {len(pattern_results)} results, refining...")
                 else:
                     if self.debug:
-                        print(f"      ⚠ Found {len(pattern_results)} results (many), refining to narrow down...")
+                        print(f"      ⚠ Found {len(pattern_results)} results (many), using file-level refinement...")
 
-                # Refine by filtering for additional patterns
-                refined = self._refine_results(
-                    pattern_results,
+                # Use file-level refinement for better accuracy
+                refined = self._refine_results_file_level(
+                    pattern,
                     patterns[i+1:],  # Use remaining patterns as filters
+                    search_locations,
                     sql_analysis
                 )
 
@@ -299,7 +300,10 @@ class ProgressiveSearchEngine:
         sql_analysis: Any
     ) -> List[Dict[str, Any]]:
         """
-        Refine results by filtering for additional patterns.
+        Refine results by filtering for additional patterns (LINE-LEVEL).
+
+        DEPRECATED: This method does line-level filtering which is less effective.
+        Use _refine_results_file_level instead for better accuracy.
 
         This is the search-and-filter approach (NOT hardcoded regex).
 
@@ -340,6 +344,97 @@ class ProgressiveSearchEngine:
                 print(f"         → {len(refined)} results remaining")
 
         return refined
+
+    def _refine_results_file_level(
+        self,
+        initial_pattern: SearchPattern,
+        additional_patterns: List[SearchPattern],
+        search_locations: List[SearchLocation],
+        sql_analysis: Any
+    ) -> List[Dict[str, Any]]:
+        """
+        Refine results using FILE-LEVEL filtering.
+
+        This is more effective than line-level filtering because refinement patterns
+        may appear on different lines than the initial pattern.
+
+        Strategy:
+        1. Search for initial pattern across locations
+        2. Extract unique file paths from results
+        3. For each file, check if it contains complementary patterns (not alternatives)
+        4. Return results from files that match patterns
+
+        Example:
+        - Initial: "500" finds 1650 lines across 200 files
+        - File filter: Keep files with ".limit(" → 15 files
+        - File filter: Keep files with "Member" → 3 files
+        - Return: All lines from those 3 files matching initial pattern
+        """
+        if not additional_patterns:
+            # No refinement needed, return empty
+            return []
+
+        # Select complementary patterns for refinement (NOT alternatives of same type)
+        # For scope chains, we want different clause types, not different scope names
+        refinement_patterns = []
+        seen_clause_types = {initial_pattern.clause_type}
+
+        for p in additional_patterns:
+            # Skip patterns of the same clause type as initial pattern
+            # (e.g., if initial is "Member.active.limit", skip "Member.enabled.limit")
+            if p.clause_type == initial_pattern.clause_type:
+                continue
+
+            # Skip if we already have a pattern of this clause type
+            if p.clause_type in seen_clause_types:
+                continue
+
+            # Add this complementary pattern
+            refinement_patterns.append(p)
+            seen_clause_types.add(p.clause_type)
+
+            # Use top 3 complementary patterns
+            if len(refinement_patterns) >= 3:
+                break
+
+        # If no complementary patterns found, don't refine
+        if not refinement_patterns:
+            if self.debug:
+                print(f"         No complementary patterns found, skipping refinement")
+            return []
+
+        # Extract filter pattern strings
+        filter_pattern_strings = [p.pattern for p in refinement_patterns]
+
+        if self.debug:
+            print(f"         Using file-level filtering with {len(refinement_patterns)} complementary patterns:")
+            for p in refinement_patterns:
+                print(f"            - {p.description} (type: {p.clause_type})")
+
+        # Execute file-level search for each location
+        all_refined_results = []
+
+        for location in search_locations:
+            file_ext = self._extract_file_extension(location.glob_pattern)
+
+            # Use the new file-level filter method from CodeSearchEngine
+            refined = self.search_engine.search_file_level_filter(
+                initial_pattern.pattern,
+                filter_pattern_strings,
+                file_ext
+            )
+
+            # Tag results with pattern descriptions
+            for result in refined:
+                # Combine pattern descriptions for why explanation
+                all_pattern_descs = [initial_pattern.description] + [
+                    p.description for p in refinement_patterns
+                ]
+                result["matched_patterns"] = all_pattern_descs
+
+            all_refined_results.extend(refined)
+
+        return all_refined_results
 
     def _pattern_matches(self, pattern: str, content: str) -> bool:
         """Check if a pattern matches content (regex or substring)."""

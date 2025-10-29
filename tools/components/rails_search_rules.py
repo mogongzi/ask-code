@@ -173,17 +173,78 @@ class ScopeDefinitionRule(RailsSearchRule):
     def get_search_locations(self) -> List[SearchLocation]:
         return [
             SearchLocation("app/models/**/*.rb", "Model definitions (scopes and constants)", 1),
+            SearchLocation("app/mailers/**/*.rb", "Mailers (scope chain usage)", 2),
+            SearchLocation("app/controllers/**/*.rb", "Controllers (scope chain usage)", 3),
+            SearchLocation("app/jobs/**/*.rb", "Jobs (scope chain usage)", 4),
+            SearchLocation("lib/**/*.rb", "Lib helpers (scope chain usage)", 5),
         ]
 
     def build_search_patterns(self, sql_analysis: Any) -> List[SearchPattern]:
         """Build scope/constant search patterns.
 
         Strategy:
-        1. Search for column names in scope definitions
-        2. Search for constant names (e.g., CANONICAL_COND, ACTIVE_COND)
-        3. Search for scope names inferred from WHERE conditions
+        1. Search for common Rails scope chains (Model.active.limit, Model.enabled.offset)
+        2. Search for column names in scope definitions
+        3. Search for constant names (e.g., CANONICAL_COND, ACTIVE_COND)
+        4. Search for scope names inferred from WHERE conditions
         """
         patterns = []
+
+        # === NEW: Scope chain patterns (very common in Rails) ===
+        # These patterns catch scope chains like: Member.active.limit(500).offset(1000)
+        if sql_analysis.primary_model:
+            # Common Rails scope names for WHERE conditions
+            common_scope_names = [
+                "active",      # Most common: WHERE active = true, disabled_at IS NULL, etc.
+                "enabled",     # WHERE enabled = true
+                "visible",     # WHERE visible = true
+                "published",   # WHERE published = true
+                "valid",       # WHERE valid = true
+                "available",   # WHERE available = true
+            ]
+
+            # If SQL has LIMIT, search for Model.scope_name (will be refined with .limit)
+            if getattr(sql_analysis, "has_limit", False):
+                for scope_name in common_scope_names:
+                    # Primary pattern: Model.scope_name with nearby .limit
+                    patterns.append(SearchPattern(
+                        pattern=rf"{sql_analysis.primary_model}\.{scope_name}\..*\.limit",
+                        distinctiveness=0.75,  # High distinctiveness
+                        description=f"{sql_analysis.primary_model}.{scope_name}...limit scope chain",
+                        clause_type="scope_chain"
+                    ))
+
+                    # Fallback: Just Model.scope_name (to handle multi-line chains)
+                    patterns.append(SearchPattern(
+                        pattern=rf"{sql_analysis.primary_model}\.{scope_name}\b",
+                        distinctiveness=0.65,  # Lower, will need refinement
+                        description=f"{sql_analysis.primary_model}.{scope_name} scope usage",
+                        clause_type="scope_usage"
+                    ))
+
+            # If SQL has OFFSET, search for Model.scope_name.offset patterns
+            if getattr(sql_analysis, "has_offset", False):
+                for scope_name in common_scope_names:
+                    patterns.append(SearchPattern(
+                        pattern=rf"{sql_analysis.primary_model}\.{scope_name}\..*\.offset",
+                        distinctiveness=0.75,
+                        description=f"{sql_analysis.primary_model}.{scope_name}...offset scope chain",
+                        clause_type="scope_chain"
+                    ))
+
+            # Generic scope chain with limit (only when we can't infer specific scopes)
+            # This is a fallback pattern when we have no WHERE conditions to guide us
+            where_columns = [
+                cond.column.name
+                for cond in getattr(sql_analysis, "where_conditions", [])
+            ]
+            if getattr(sql_analysis, "has_limit", False) and len(where_columns) == 0:
+                patterns.append(SearchPattern(
+                    pattern=rf"{sql_analysis.primary_model}\.\w+\..*\.limit",
+                    distinctiveness=0.65,
+                    description=f"{sql_analysis.primary_model}.scope...limit chain",
+                    clause_type="scope_chain_generic"
+                ))
 
         # Extract WHERE condition columns
         where_columns = [
@@ -347,6 +408,8 @@ class AssociationRule(RailsSearchRule):
         return [
             SearchLocation("app/models/**/*.rb", "Association wrappers in models", 1),
             SearchLocation("app/controllers/**/*.rb", "Association usage in controllers", 2),
+            SearchLocation("app/mailers/**/*.rb", "Association usage in mailers", 3),
+            SearchLocation("app/jobs/**/*.rb", "Association usage in jobs", 4),
         ]
 
     def build_search_patterns(self, sql_analysis: Any) -> List[SearchPattern]:
@@ -354,8 +417,9 @@ class AssociationRule(RailsSearchRule):
 
         Strategy:
         1. Extract foreign keys from WHERE conditions
-        2. Search for association wrapper methods (e.g., find_all_active)
-        3. Search for association usage patterns
+        2. Search for association wrapper methods (e.g., find_all_active, get_all_members)
+        3. Search for association wrapper calls (object.find_*, object.get_*)
+        4. Search for association usage patterns
         """
         patterns = []
 
@@ -366,15 +430,38 @@ class AssociationRule(RailsSearchRule):
             if cond.column.is_foreign_key
         ]
 
+        # === NEW: Association wrapper method CALLS (very common in Rails) ===
+        # Pattern: company.find_all_active, user.get_all_posts, etc.
+        if sql_analysis.primary_model and getattr(sql_analysis, "has_limit", False):
+            # Common association wrapper prefixes
+            wrapper_prefixes = ["find_all_", "get_all_", "find_active_", "get_active_"]
+
+            for prefix in wrapper_prefixes:
+                patterns.append(SearchPattern(
+                    pattern=rf"\.{prefix}\w+\..*\.limit",
+                    distinctiveness=0.75,  # High distinctiveness - these are specific patterns
+                    description=f"Association wrapper call: .{prefix}*...limit",
+                    clause_type="association_wrapper_call"
+                ))
+
+        # Generic association wrapper call with limit (less specific)
+        if getattr(sql_analysis, "has_limit", False):
+            patterns.append(SearchPattern(
+                pattern=rf"\.\w+\.limit",
+                distinctiveness=0.5,  # Lower distinctiveness - very generic
+                description="Generic method call chain with .limit",
+                clause_type="method_chain"
+            ))
+
         for fk in foreign_keys:
             assoc_name = fk.association_name
 
-            # Search for association wrapper methods
+            # Search for association wrapper method DEFINITIONS
             patterns.append(SearchPattern(
                 pattern=rf"def\s+find_\w+",
                 distinctiveness=0.7,
-                description=f"Association wrapper method (find_*)",
-                clause_type="association_wrapper"
+                description=f"Association wrapper method definition (find_*)",
+                clause_type="association_wrapper_def"
             ))
 
             # Search for association usage
