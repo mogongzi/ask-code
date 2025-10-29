@@ -111,6 +111,72 @@ class TestDomainRules:
 
         print("✓ RuleSet correctly selects applicable rules")
 
+    def test_scope_chain_patterns(self):
+        """Test that scope chain patterns are generated for common Rails patterns."""
+        rule = ScopeDefinitionRule()
+
+        # Mock analysis for Member.active.limit(500).offset(1000)
+        class MockAnalysis:
+            primary_model = "Member"
+            has_limit = True
+            has_offset = True
+            where_conditions = []
+
+        patterns = rule.build_search_patterns(MockAnalysis())
+
+        # Should generate scope chain patterns for .active, .enabled, etc.
+        scope_chain_patterns = [p for p in patterns if "scope_chain" in p.clause_type]
+        assert len(scope_chain_patterns) > 0
+
+        # Check for Member.active...limit pattern
+        active_limit_patterns = [
+            p for p in patterns
+            if "Member" in p.pattern and "active" in p.pattern and "limit" in p.pattern
+        ]
+        assert len(active_limit_patterns) > 0
+
+        # Check distinctiveness
+        for pattern in scope_chain_patterns[:3]:
+            assert pattern.distinctiveness >= 0.65  # Should be fairly distinctive
+
+        print("✓ Scope chain patterns generated correctly")
+
+    def test_association_wrapper_patterns(self):
+        """Test that association wrapper patterns are generated."""
+        from tools.components.rails_search_rules import AssociationRule
+
+        rule = AssociationRule()
+
+        # Mock analysis with foreign key (company_id)
+        class MockColumn:
+            name = "company_id"
+            is_foreign_key = True
+            association_name = "company"
+
+        class MockCondition:
+            def __init__(self):
+                self.column = MockColumn()
+
+        class MockAnalysis:
+            primary_model = "Member"
+            has_limit = True
+            where_conditions = [MockCondition()]
+
+        patterns = rule.build_search_patterns(MockAnalysis())
+
+        # Should generate association wrapper call patterns
+        wrapper_patterns = [p for p in patterns if "wrapper" in p.clause_type]
+        assert len(wrapper_patterns) > 0
+
+        # Check for find_all_ pattern (company.find_all_active)
+        find_all_patterns = [
+            p for p in patterns
+            if "find_all_" in p.pattern and "limit" in p.pattern
+        ]
+        assert len(find_all_patterns) > 0
+
+        print("✓ Association wrapper patterns generated correctly")
+
 
 class TestProgressiveSearchEngine:
     """Test progressive search engine."""
@@ -216,6 +282,43 @@ class TestCodeSearchEngine:
 
         print("✓ search_multi_pattern filters correctly")
 
+    def test_file_level_filter(self):
+        """Test file-level filtering for better refinement."""
+        engine = MockCodeSearchEngine()
+
+        # Simulate the issue: "500" appears in many places (1650 matches)
+        # But only alert_mailer.rb has the actual query
+        engine.mock_results = [
+            {"file": "app/mailers/alert_mailer.rb", "line": 45, "content": "Member.where(company_id: cid)"},
+            {"file": "app/mailers/alert_mailer.rb", "line": 46, "content": "  .where(login_handle: IS NOT NULL)"},
+            {"file": "app/mailers/alert_mailer.rb", "line": 47, "content": "  .limit(500).offset(1000)"},
+            {"file": "config/constants.rb", "line": 10, "content": "HTTP_SUCCESS = 500"},
+            {"file": "lib/timeout.rb", "line": 5, "content": "DEFAULT_TIMEOUT = 500"},
+        ]
+
+        # Simulate file content for file-level filtering
+        engine.file_contents = {
+            "app/mailers/alert_mailer.rb": """
+                def self.get_list_of_members_for
+                  Member.where(company_id: cid)
+                    .where(login_handle: IS NOT NULL)
+                    .limit(500).offset(1000)
+                    .order(:id)
+                end
+            """,
+            "config/constants.rb": "HTTP_SUCCESS = 500",
+            "lib/timeout.rb": "DEFAULT_TIMEOUT = 500"
+        }
+
+        # File-level filter: Find files with "500" that also have ".limit" and "Member"
+        results = engine.search_file_level_filter("500", [r"\.limit", "Member"], "rb")
+
+        # Should only return results from alert_mailer.rb
+        assert len(results) > 0
+        assert all(r["file"] == "app/mailers/alert_mailer.rb" for r in results)
+
+        print("✓ File-level filtering correctly narrows down results")
+
 
 # Mock implementations for testing
 
@@ -224,6 +327,7 @@ class MockCodeSearchEngine:
 
     def __init__(self):
         self.mock_results = []
+        self.file_contents = {}  # For file-level filtering
 
     def search(self, pattern, file_ext):
         return self.mock_results
@@ -241,6 +345,53 @@ class MockCodeSearchEngine:
 
         return filtered
 
+    def search_file_level_filter(self, initial_pattern, filter_patterns, file_ext):
+        """Mock file-level filtering implementation."""
+        import re
+
+        # Get initial results
+        initial_results = self.search(initial_pattern, file_ext)
+
+        # Group by file
+        files_with_matches = {}
+        for result in initial_results:
+            file_path = result.get("file", "")
+            if file_path not in files_with_matches:
+                files_with_matches[file_path] = []
+            files_with_matches[file_path].append(result)
+
+        # Filter files that contain ALL filter patterns
+        matching_files = []
+        for file_path in files_with_matches.keys():
+            if file_path not in self.file_contents:
+                continue
+
+            file_content = self.file_contents[file_path].lower()
+
+            # Check if all filter patterns exist in file
+            all_match = True
+            for filter_pattern in filter_patterns:
+                try:
+                    if not re.search(filter_pattern, file_content, re.IGNORECASE):
+                        all_match = False
+                        break
+                except re.error:
+                    if filter_pattern.lower() not in file_content:
+                        all_match = False
+                        break
+
+            if all_match:
+                matching_files.append(file_path)
+
+        # Return all results from matching files
+        filtered_results = []
+        for file_path in matching_files:
+            for result in files_with_matches[file_path]:
+                result["matched_patterns"] = [initial_pattern] + filter_patterns
+                filtered_results.append(result)
+
+        return filtered_results
+
 
 def run_all_tests():
     """Run all tests manually."""
@@ -252,6 +403,8 @@ def run_all_tests():
     test_rules.test_limit_offset_rule_patterns()
     test_rules.test_scope_definition_rule_patterns()
     test_rules.test_rule_set_applicable_rules()
+    test_rules.test_scope_chain_patterns()
+    test_rules.test_association_wrapper_patterns()
 
     # Test progressive search engine
     print("\n2. Testing Progressive Search Engine...")
@@ -268,6 +421,7 @@ def run_all_tests():
     print("\n4. Testing Code Search Engine...")
     test_search = TestCodeSearchEngine()
     test_search.test_search_multi_pattern()
+    test_search.test_file_level_filter()
 
     print("\n=== All Tests Passed! ===\n")
 
