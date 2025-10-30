@@ -13,7 +13,6 @@ Uses generalizable search strategies - no hardcoded patterns.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-from pathlib import Path
 
 from .base_tool import BaseTool
 from .components.sql_log_classifier import SQLLogClassifier

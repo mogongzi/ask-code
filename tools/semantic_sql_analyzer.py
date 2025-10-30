@@ -164,9 +164,52 @@ class SemanticSQLAnalyzer:
         if not where:
             return
 
-        # Find all binary operations in WHERE clause
+        # Handle IS NOT NULL (exp.Not with exp.Is child)
+        for not_expr in where.find_all(exp.Not):
+            if isinstance(not_expr.this, exp.Is) and isinstance(not_expr.this.this, exp.Column):
+                column = ColumnReference(
+                    name=not_expr.this.this.name,
+                    table=not_expr.this.this.table
+                )
+                condition = WhereCondition(
+                    column=column,
+                    operator="IS_NOT_NULL",
+                    value_type="literal",
+                    value=None
+                )
+                analysis.where_conditions.append(condition)
+
+        # Handle IS NULL (exp.Is)
+        for is_expr in where.find_all(exp.Is):
+            if isinstance(is_expr.this, exp.Column):
+                # Check if this IS was already processed as part of IS NOT NULL
+                parent_is_not = False
+                for not_expr in where.find_all(exp.Not):
+                    if not_expr.this == is_expr:
+                        parent_is_not = True
+                        break
+
+                if not parent_is_not:
+                    column = ColumnReference(
+                        name=is_expr.this.name,
+                        table=is_expr.this.table
+                    )
+                    condition = WhereCondition(
+                        column=column,
+                        operator="IS_NULL",
+                        value_type="literal",
+                        value=None
+                    )
+                    analysis.where_conditions.append(condition)
+
+        # Find all binary operations in WHERE clause (=, !=, <, >, etc.)
+        # Skip "IS" operations as they're handled above
         for binary_op in where.find_all(exp.Binary):
             if isinstance(binary_op.left, exp.Column):
+                # Skip IS operations (already handled as IS NULL / IS NOT NULL)
+                if binary_op.key.upper() == "IS":
+                    continue
+
                 column = ColumnReference(
                     name=binary_op.left.name,
                     table=binary_op.left.table
