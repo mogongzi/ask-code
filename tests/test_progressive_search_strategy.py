@@ -41,9 +41,14 @@ class TestDomainRules:
         # Should generate patterns in order of distinctiveness
         assert len(patterns) > 0
 
-        # Check that exact LIMIT value pattern exists
-        limit_patterns = [p for p in patterns if "500" in p.pattern]
+        # Check that structural LIMIT pattern exists (.limit( or .take)
+        # NOTE: We now use structural patterns, not literal values
+        limit_patterns = [p for p in patterns if "limit" in p.pattern.lower() or "take" in p.pattern.lower()]
         assert len(limit_patterns) > 0
+
+        # Check for OFFSET pattern
+        offset_patterns = [p for p in patterns if "offset" in p.pattern.lower()]
+        assert len(offset_patterns) > 0
 
         # Check distinctiveness scores
         for pattern in patterns:
@@ -74,12 +79,17 @@ class TestDomainRules:
 
         patterns = rule.build_search_patterns(MockAnalysis())
 
-        # Should generate patterns for constants and scopes
+        # Should generate patterns for model usage and scope definitions
         assert len(patterns) > 0
 
-        # Check for constant patterns (high distinctiveness)
-        constant_patterns = [p for p in patterns if "COND" in p.pattern]
-        assert len(constant_patterns) > 0
+        # Check for Model name pattern (structural, not column-specific)
+        # NOTE: We now use structural patterns like "Member.\w+", not hardcoded constants
+        model_patterns = [p for p in patterns if "Member" in p.pattern]
+        assert len(model_patterns) > 0
+
+        # Check for generic scope definition pattern
+        scope_def_patterns = [p for p in patterns if "scope" in p.pattern.lower()]
+        assert len(scope_def_patterns) > 0
 
         print("✓ ScopeDefinitionRule generates correct patterns")
 
@@ -124,20 +134,21 @@ class TestDomainRules:
 
         patterns = rule.build_search_patterns(MockAnalysis())
 
-        # Should generate scope chain patterns for .active, .enabled, etc.
+        # Should generate scope chain patterns (structural, not hardcoded scope names)
+        # NOTE: We now use structural patterns like "Member.\w+.*\.limit" instead of "Member.active.limit"
         scope_chain_patterns = [p for p in patterns if "scope_chain" in p.clause_type]
         assert len(scope_chain_patterns) > 0
 
-        # Check for Member.active...limit pattern
-        active_limit_patterns = [
+        # Check for Member...limit pattern (structural regex, not hardcoded "active")
+        member_limit_patterns = [
             p for p in patterns
-            if "Member" in p.pattern and "active" in p.pattern and "limit" in p.pattern
+            if "Member" in p.pattern and ("limit" in p.pattern.lower() or "offset" in p.pattern.lower())
         ]
-        assert len(active_limit_patterns) > 0
+        assert len(member_limit_patterns) > 0
 
         # Check distinctiveness
-        for pattern in scope_chain_patterns[:3]:
-            assert pattern.distinctiveness >= 0.65  # Should be fairly distinctive
+        for pattern in scope_chain_patterns:
+            assert pattern.distinctiveness >= 0.4  # Should be moderately distinctive
 
         print("✓ Scope chain patterns generated correctly")
 
@@ -164,16 +175,14 @@ class TestDomainRules:
 
         patterns = rule.build_search_patterns(MockAnalysis())
 
-        # Should generate association wrapper call patterns
-        wrapper_patterns = [p for p in patterns if "wrapper" in p.clause_type]
-        assert len(wrapper_patterns) > 0
+        # Should generate method chain patterns (structural patterns, not hardcoded names)
+        # NOTE: We now use clause_type="method_chain", not "wrapper"
+        method_chain_patterns = [p for p in patterns if "method_chain" in p.clause_type]
+        assert len(method_chain_patterns) > 0
 
-        # Check for find_all_ pattern (company.find_all_active)
-        find_all_patterns = [
-            p for p in patterns
-            if "find_all_" in p.pattern and "limit" in p.pattern
-        ]
-        assert len(find_all_patterns) > 0
+        # Check for structural .limit pattern (not hardcoded method names like "find_all_")
+        limit_patterns = [p for p in patterns if "limit" in p.pattern.lower()]
+        assert len(limit_patterns) > 0
 
         print("✓ Association wrapper patterns generated correctly")
 

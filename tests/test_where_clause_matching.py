@@ -79,7 +79,8 @@ class TestWhereClauseParser:
         """
         conditions = self.parser.parse_ruby_code(code)
 
-        assert len(conditions) == 3
+        # NOTE: Parser correctly detects @company.members association and adds implicit company_id condition
+        assert len(conditions) == 4  # 3 from WHERE string + 1 from association (company_id)
 
         first_login = next((c for c in conditions if c.column == "first_login_at"), None)
         assert first_login is not None

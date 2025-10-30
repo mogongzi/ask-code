@@ -819,10 +819,19 @@ class WhereClauseParser:
                         ))
 
             # Parse hash-based WHERE clauses
-            # .where(column: value, other: value)
+            # Supports both syntaxes:
+            # - .where(column: value, other: value)  [keyword syntax]
+            # - .where(:column => value, :other => value)  [hash syntax]
             else:
-                hash_pairs = re.finditer(r'(\w+)\s*:\s*([^,)]+)', where_content)
-                for pair in hash_pairs:
+                # Try keyword syntax first: column: value
+                keyword_pairs = re.finditer(r'(\w+)\s*:\s*([^,)]+)', where_content)
+                # Also try hash syntax: :column => value
+                hash_pairs = re.finditer(r':(\w+)\s*=>\s*([^,)]+)', where_content)
+
+                # Combine both match types
+                all_pairs = list(keyword_pairs) + list(hash_pairs)
+
+                for pair in all_pairs:
                     column = self._normalize_column_name(pair.group(1))
                     value = pair.group(2).strip()
 
@@ -843,10 +852,16 @@ class WhereClauseParser:
                             value.startswith(":")  # Symbol
                         )
 
+                        # Normalize value by stripping quotes from string literals
+                        # This ensures consistency with SQL parser behavior
+                        normalized_value = value
+                        if is_literal and value.startswith(("'", '"')) and value.endswith(("'", '"')):
+                            normalized_value = value[1:-1]  # Strip surrounding quotes
+
                         conditions.append(NormalizedCondition(
                             column=column,
                             operator=Operator.EQ,
-                            value=value if is_literal else None,  # None for expressions = parameterized
+                            value=normalized_value if is_literal else None,  # None for expressions = parameterized
                             raw_pattern=f"{column}: {value}"
                         ))
 
