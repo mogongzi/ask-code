@@ -474,13 +474,11 @@ class ProgressiveSearchEngine:
                 print(f"         No complementary patterns found, skipping refinement")
             return []
 
-        # Extract filter pattern strings
-        filter_pattern_strings = [p.pattern for p in refinement_patterns]
-
         if self.debug:
             print(f"         Using file-level filtering with {len(refinement_patterns)} complementary patterns:")
             for p in refinement_patterns:
-                print(f"            - {p.description} (type: {p.clause_type})")
+                optional_tag = " [OPTIONAL]" if p.optional else ""
+                print(f"            - {p.description} (type: {p.clause_type}){optional_tag}")
 
         # Execute file-level search for each location
         all_refined_results = []
@@ -489,9 +487,10 @@ class ProgressiveSearchEngine:
             file_ext = self._extract_file_extension(location.glob_pattern)
 
             # Use the new file-level filter method from CodeSearchEngine
+            # Pass SearchPattern objects (not just strings) to preserve optional flag
             refined = self.search_engine.search_file_level_filter(
                 initial_pattern.pattern,
-                filter_pattern_strings,
+                refinement_patterns,  # Pass full SearchPattern objects
                 file_ext
             )
 

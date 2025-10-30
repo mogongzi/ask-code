@@ -304,7 +304,13 @@ class UnifiedConfidenceScorer:
         code_lower = code_snippet.lower()
         presence.code_has_where = ".where(" in code_lower
         presence.code_has_order = ".order(" in code_lower
-        presence.code_has_limit = ".limit(" in code_lower
+        # Check for .limit() or .take/.first/.last (all are LIMIT equivalents)
+        presence.code_has_limit = (
+            ".limit(" in code_lower or
+            ".take" in code_lower or
+            ".first" in code_lower or
+            ".last" in code_lower
+        )
         presence.code_has_offset = ".offset(" in code_lower
 
         return presence

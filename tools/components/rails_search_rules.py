@@ -26,6 +26,7 @@ class SearchPattern:
     distinctiveness: float  # 0.0 (very common) to 1.0 (very rare)
     description: str
     clause_type: str  # "limit", "where", "order", "association", etc.
+    optional: bool = False  # If True, pattern enhances matches but doesn't exclude files
 
 
 @dataclass
@@ -78,18 +79,20 @@ class LimitOffsetRule(RailsSearchRule):
 
         Strategy:
         1. Search for .limit( and .offset( methods (structural patterns)
-        2. Search for pagination helpers
+        2. Search for .take, .first, .last (LIMIT equivalents)
+        3. Search for pagination helpers
 
-        Note: We use structural patterns (e.g., .limit\() instead of literal values
+        Note: We use structural patterns (e.g., .limit()) instead of literal values
         (e.g., .limit(500)) because values often come from constants, variables, or config.
         """
         patterns = []
 
-        # Generic .limit( pattern - structural, not value-specific
+        # Combined LIMIT pattern: .limit(), .take, .first, .last (all LIMIT equivalents)
+        # Using a single pattern ensures file-level filtering accepts any of these methods
         patterns.append(SearchPattern(
-            pattern=r"\.limit\(",
+            pattern=r"\.(?:limit\(|take\b|first\b|last\b)",
             distinctiveness=0.6,  # Moderately distinctive
-            description=".limit() method call",
+            description=".limit()/.take/.first/.last method call",
             clause_type="limit"
         ))
 
@@ -111,7 +114,7 @@ class LimitOffsetRule(RailsSearchRule):
         - Model name MUST be present in the content
 
         High confidence if:
-        - Has .limit() present (structural match)
+        - Has .limit() or .take/.first/.last present (structural match)
         - Has both .limit() and .offset() when SQL has both
         - Has ORDER BY when SQL has ORDER BY
 
@@ -128,8 +131,14 @@ class LimitOffsetRule(RailsSearchRule):
 
         confidence = 0.6  # Base confidence (model name is present)
 
-        # Check for .limit( presence (structural check)
-        if ".limit(" in content:
+        # Check for .limit( or .take/.first/.last presence (structural check)
+        has_limit_equivalent = (
+            ".limit(" in content or
+            ".take" in content or
+            ".first" in content or
+            ".last" in content
+        )
+        if has_limit_equivalent:
             confidence += 0.2
 
         # Check OFFSET presence
@@ -181,10 +190,10 @@ class ScopeDefinitionRule(RailsSearchRule):
     def get_search_locations(self) -> List[SearchLocation]:
         return [
             SearchLocation("app/models/**/*.rb", "Model definitions (scopes and constants)", 1),
-            SearchLocation("app/mailers/**/*.rb", "Mailers (scope chain usage)", 2),
-            SearchLocation("app/controllers/**/*.rb", "Controllers (scope chain usage)", 3),
-            SearchLocation("app/jobs/**/*.rb", "Jobs (scope chain usage)", 4),
-            SearchLocation("lib/**/*.rb", "Lib helpers (scope chain usage)", 5),
+            SearchLocation("lib/**/*.rb", "Lib helpers (scope chain usage)", 2),
+            SearchLocation("app/mailers/**/*.rb", "Mailers (scope chain usage)", 3),
+            SearchLocation("app/controllers/**/*.rb", "Controllers (scope chain usage)", 4),
+            SearchLocation("app/jobs/**/*.rb", "Jobs (scope chain usage)", 5),
         ]
 
     def build_search_patterns(self, sql_analysis: Any) -> List[SearchPattern]:
@@ -204,13 +213,13 @@ class ScopeDefinitionRule(RailsSearchRule):
 
         # === Structural patterns for Model method chains ===
         if sql_analysis.primary_model:
-            # Generic scope chain: Model.anything.anything.limit
+            # Generic scope chain: Model.anything.anything.limit/take/first/last
             # This catches ALL scope chains without assuming specific scope names
             if getattr(sql_analysis, "has_limit", False):
                 patterns.append(SearchPattern(
-                    pattern=rf"{sql_analysis.primary_model}\.\w+.*\.limit\(",
+                    pattern=rf"{sql_analysis.primary_model}\.\w+.*\.(?:limit|take|first|last)\b",
                     distinctiveness=0.65,
-                    description=f"{sql_analysis.primary_model} scope chain with .limit",
+                    description=f"{sql_analysis.primary_model} scope chain with .limit/.take/.first/.last",
                     clause_type="scope_chain"
                 ))
 
@@ -233,11 +242,13 @@ class ScopeDefinitionRule(RailsSearchRule):
 
         # Search for generic scope definitions (not column-specific)
         # This finds ANY scope definition in model files
+        # OPTIONAL: Only applies to app/models/, not lib/ or other directories
         patterns.append(SearchPattern(
             pattern=r"scope\s+:",
             distinctiveness=0.5,
             description="Scope definition (generic)",
-            clause_type="scope_definition"
+            clause_type="scope_definition",
+            optional=True  # Don't exclude non-model files that lack scope definitions
         ))
 
         return patterns
@@ -271,7 +282,13 @@ class ScopeDefinitionRule(RailsSearchRule):
 
         # Check for query chain structure matching SQL
         if getattr(sql_analysis, "has_limit", False):
-            if ".limit(" in content:
+            has_limit_equivalent = (
+                ".limit(" in content or
+                ".take" in content or
+                ".first" in content or
+                ".last" in content
+            )
+            if has_limit_equivalent:
                 confidence += 0.15
 
         if getattr(sql_analysis, "has_offset", False):
@@ -303,9 +320,10 @@ class AssociationRule(RailsSearchRule):
     def get_search_locations(self) -> List[SearchLocation]:
         return [
             SearchLocation("app/models/**/*.rb", "Association wrappers in models", 1),
-            SearchLocation("app/controllers/**/*.rb", "Association usage in controllers", 2),
-            SearchLocation("app/mailers/**/*.rb", "Association usage in mailers", 3),
-            SearchLocation("app/jobs/**/*.rb", "Association usage in jobs", 4),
+            SearchLocation("lib/**/*.rb", "Lib helpers (association usage)", 2),
+            SearchLocation("app/controllers/**/*.rb", "Association usage in controllers", 3),
+            SearchLocation("app/mailers/**/*.rb", "Association usage in mailers", 4),
+            SearchLocation("app/jobs/**/*.rb", "Association usage in jobs", 5),
         ]
 
     def build_search_patterns(self, sql_analysis: Any) -> List[SearchPattern]:
@@ -374,7 +392,13 @@ class AssociationRule(RailsSearchRule):
 
         # Check for method chain structure matching SQL
         if getattr(sql_analysis, "has_limit", False):
-            if ".limit(" in content:
+            has_limit_equivalent = (
+                ".limit(" in content or
+                ".take" in content or
+                ".first" in content or
+                ".last" in content
+            )
+            if has_limit_equivalent:
                 confidence += 0.2
 
         if getattr(sql_analysis, "has_offset", False):
@@ -399,13 +423,17 @@ class OrderByRule(RailsSearchRule):
 
     def get_search_locations(self) -> List[SearchLocation]:
         return [
-            SearchLocation("app/**/*.rb", "All application code", 1),
+            SearchLocation("app/models/**/*.rb", "Model code", 1),
+            SearchLocation("lib/**/*.rb", "Lib helpers", 2),
+            SearchLocation("app/controllers/**/*.rb", "Controller code", 3),
+            SearchLocation("app/mailers/**/*.rb", "Mailer code", 4),
+            SearchLocation("app/jobs/**/*.rb", "Job code", 5),
         ]
 
     def build_search_patterns(self, sql_analysis: Any) -> List[SearchPattern]:
         """Build ORDER BY search patterns.
 
-        Note: We use structural patterns (e.g., .order\() instead of literal column names
+        Note: We use structural patterns (e.g., .order()) instead of literal column names
         (e.g., .order(created_at)) because column names might be in variables, dynamic sorting,
         or Arel expressions.
         """
@@ -444,8 +472,14 @@ class OrderByRule(RailsSearchRule):
         if ".order(" in content:
             confidence += 0.2
 
-            # Bonus if also has .limit( (common pagination pattern)
-            if ".limit(" in content:
+            # Bonus if also has .limit or .take/.first/.last (common pagination pattern)
+            has_limit_equivalent = (
+                ".limit(" in content or
+                ".take" in content or
+                ".first" in content or
+                ".last" in content
+            )
+            if has_limit_equivalent:
                 confidence += 0.1
 
         return min(1.0, max(0.0, confidence))

@@ -1036,6 +1036,18 @@ class TransactionAnalyzer(BaseTool):
         for block in transaction_blocks:
             # Calculate confidence level
             raw_score = block.get('raw_score', block['score'])
+            total_cols = block['total_columns']
+
+            # Convert to 0-1 confidence score
+            # Use a scaling function: confidence = min(1.0, raw_score / (total_cols * 0.5))
+            # This means:
+            # - 50% of columns matched = 1.0 confidence
+            # - Less than 50% scales proportionally
+            # This is reasonable because transaction blocks are fuzzy matches
+            confidence_numeric = min(1.0, raw_score / max(1, total_cols * 0.5))
+            confidence_numeric = round(confidence_numeric, 2)
+
+            # Text label for human readability
             confidence_level = "very high" if raw_score >= 5 else \
                              "high" if raw_score >= 3 else "medium"
 
@@ -1044,7 +1056,7 @@ class TransactionAnalyzer(BaseTool):
                 "Transaction block wrapping table operations",
                 f"Table: {primary_insert.table}",
                 f"Matched columns: {', '.join(block['matched_columns'][:5])}",
-                f"Column signature match: {raw_score}/{block['total_columns']}"
+                f"Column signature match: {raw_score}/{total_cols} ({confidence_level})"
             ]
 
             # Add polymorphic association info if present
@@ -1060,7 +1072,7 @@ class TransactionAnalyzer(BaseTool):
                         "file": block['file'],
                         "line": block['line'],
                         "snippet": block['snippet'],
-                        "confidence": f"{confidence_level} ({raw_score}/{block['total_columns']} columns)",
+                        "confidence": confidence_numeric,  # Now numeric!
                         "why": why_lines,
                         "polymorphic_columns": block.get('polymorphic_columns', [])
                     }]
@@ -1132,17 +1144,20 @@ class TransactionAnalyzer(BaseTool):
         model_name = self._table_to_model_name(table_name)
 
         # Use ripgrep to find transaction blocks with 30 lines of context
-        # IMPORTANT: Exclude test directories - tests don't generate production SQL
+        # IMPORTANT: Only search in app/ and lib/ directories (production code)
+        # Pass directories directly as paths (not globs) to avoid cwd issues
+        import os
+        app_dir = os.path.join(self.project_root, "app")
+        lib_dir = os.path.join(self.project_root, "lib")
+
         cmd = [
             "rg",
             "--type", "ruby",
             "-n",  # Show line numbers
             "-A", "30",  # Get 30 lines after (transaction body)
-            "--glob", "!test/**",  # Exclude test/
-            "--glob", "!spec/**",  # Exclude spec/ (RSpec)
-            "--glob", "!features/**",  # Exclude features/ (Cucumber)
             r"transaction\s+do",  # Match "transaction do"
-            self.project_root
+            app_dir,  # Search in app/ directory
+            lib_dir   # Search in lib/ directory
         ]
 
         try:
@@ -1213,8 +1228,10 @@ class TransactionAnalyzer(BaseTool):
 
             blocks_passed_filter += 1
 
-            # Enhanced debug for ALL blocks that pass the filter (not just page_view_helper)
-            if blocks_passed_filter <= 3:  # Debug first 3 blocks
+            # Enhanced debug for first few blocks that pass the filter
+            should_debug = (blocks_passed_filter <= 3)
+
+            if should_debug:
                 print(f"\n🔍 DEBUG Block #{blocks_passed_filter}: {block['file']}:{block['line']}")
                 print(f"   Block has {len(block['content_lines'])} lines captured")
                 print(f"   Block preview (first 800 chars):\n{block_text[:800]}")
@@ -1229,7 +1246,7 @@ class TransactionAnalyzer(BaseTool):
                 pattern = rf'(:{col}\b|{col}:|[\'\"]{col}[\'"])'
                 if re.search(pattern, block_text):
                     matched_columns.append(col)
-                    if blocks_passed_filter <= 3:
+                    if should_debug:
                         print(f"   ✓ Matched {col} (exact)")
                 # Also try association name for foreign keys (member_id -> member)
                 # SQL: member_id, Ruby: :member => @logged_in_user
@@ -1238,7 +1255,7 @@ class TransactionAnalyzer(BaseTool):
                     assoc_pattern = rf'(:{assoc_name}\b|{assoc_name}:|[\'\"]{assoc_name}[\'"])'
                     if re.search(assoc_pattern, block_text):
                         matched_columns.append(col)
-                        if blocks_passed_filter <= 3:
+                        if should_debug:
                             print(f"   ✓ Matched {col} via association :{assoc_name}")
 
             # Check for polymorphic associations in this block
@@ -1261,8 +1278,8 @@ class TransactionAnalyzer(BaseTool):
 
             column_match_count = len(matched_columns)
 
-            # Debug: Show match summary for first 3 blocks
-            if blocks_passed_filter <= 3:
+            # Debug: Show match summary for debug blocks
+            if should_debug:
                 print(f"   📊 Total matched: {column_match_count}/{len(signature_columns)} columns")
                 print(f"   Threshold: {min_column_matches} columns required")
                 if column_match_count < min_column_matches:
@@ -1271,7 +1288,24 @@ class TransactionAnalyzer(BaseTool):
                     print(f"   ✅ Block ACCEPTED!")
 
             # Apply bonus for distinctive columns
-            distinctive_columns = {'referer', 'user_agent', 'first_view'}
+            # Distinctive = columns that are NOT common across many tables
+            # This gives bonus to table-specific business columns, not generic foreign keys
+            # Use PATTERNS to identify common columns (works for any Rails project)
+            def is_common_column(col: str) -> bool:
+                col_lower = col.lower()
+                # Foreign keys (e.g., user_id, company_id, parent_id, etc.)
+                if col_lower.endswith('_id'):
+                    return True
+                # Common boolean flags (is_deleted, is_active, deleted, active, enabled, etc.)
+                if col_lower.startswith('is_') or col_lower in ('deleted', 'active', 'enabled', 'visible'):
+                    return True
+                # Very generic string fields (name, title, description, type, status)
+                if col_lower in ('name', 'title', 'description', 'type', 'status'):
+                    return True
+                return False
+
+            # Find distinctive columns dynamically from the signature
+            distinctive_columns = [col for col in signature_columns if not is_common_column(col)]
             distinctive_matches = [c for c in matched_columns if c in distinctive_columns]
             weighted_score = column_match_count + (len(distinctive_matches) * 0.5)
 

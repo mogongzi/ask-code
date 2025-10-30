@@ -499,19 +499,106 @@ class WhereClauseParser:
         # e.g., "page_views" -> "page_view" -> "PageView"
         return "".join(part.capitalize() for part in singular.split("_"))
 
+    def _infer_condition_from_scope_name(self, scope_name: str) -> Optional[NormalizedCondition]:
+        """
+        Heuristically infer a WHERE condition from a scope name using naming conventions.
+
+        Common Rails scope naming patterns:
+        - for_X(value) → WHERE X = value (e.g., for_custom_domain → custom_domain)
+        - by_X(value) → WHERE X = value (e.g., by_status → status)
+        - with_X(value) → WHERE X = value (e.g., with_email → email)
+        - X_is(value) → WHERE X = value (e.g., status_is → status)
+        - having_X → WHERE X IS NOT NULL (e.g., having_email → email IS NOT NULL)
+        - without_X → WHERE X IS NULL (e.g., without_email → email IS NULL)
+
+        Args:
+            scope_name: The scope method name
+
+        Returns:
+            NormalizedCondition if pattern matches, None otherwise
+        """
+        scope_lower = scope_name.lower()
+
+        # Pattern 1: for_X(value) → WHERE X = value
+        if scope_lower.startswith('for_'):
+            column = scope_lower[4:]  # Remove 'for_' prefix
+            return NormalizedCondition(
+                column=column,
+                operator=Operator.EQ,
+                value=None,  # Parameterized
+                raw_pattern=f"heuristic: {scope_name} → {column} = ?"
+            )
+
+        # Pattern 2: by_X(value) → WHERE X = value
+        if scope_lower.startswith('by_'):
+            column = scope_lower[3:]  # Remove 'by_' prefix
+            return NormalizedCondition(
+                column=column,
+                operator=Operator.EQ,
+                value=None,
+                raw_pattern=f"heuristic: {scope_name} → {column} = ?"
+            )
+
+        # Pattern 3: with_X(value) → WHERE X = value (or IS NOT NULL if no args)
+        if scope_lower.startswith('with_'):
+            column = scope_lower[5:]  # Remove 'with_' prefix
+            # Typically with_ means "with value" so assume = ?
+            return NormalizedCondition(
+                column=column,
+                operator=Operator.EQ,
+                value=None,
+                raw_pattern=f"heuristic: {scope_name} → {column} = ?"
+            )
+
+        # Pattern 4: having_X → WHERE X IS NOT NULL
+        if scope_lower.startswith('having_'):
+            column = scope_lower[7:]  # Remove 'having_' prefix
+            return NormalizedCondition(
+                column=column,
+                operator=Operator.IS_NOT_NULL,
+                raw_pattern=f"heuristic: {scope_name} → {column} IS NOT NULL"
+            )
+
+        # Pattern 5: without_X → WHERE X IS NULL
+        if scope_lower.startswith('without_'):
+            column = scope_lower[8:]  # Remove 'without_' prefix
+            return NormalizedCondition(
+                column=column,
+                operator=Operator.IS_NULL,
+                raw_pattern=f"heuristic: {scope_name} → {column} IS NULL"
+            )
+
+        # Pattern 6: X_is(value) → WHERE X = value
+        if scope_lower.endswith('_is'):
+            column = scope_lower[:-3]  # Remove '_is' suffix
+            return NormalizedCondition(
+                column=column,
+                operator=Operator.EQ,
+                value=None,
+                raw_pattern=f"heuristic: {scope_name} → {column} = ?"
+            )
+
+        return None
+
     def _resolve_scope_conditions(self, model_name: str, scope_name: str) -> List[NormalizedCondition]:
         """
         Resolve a Rails scope to its WHERE conditions.
 
+        Strategy:
+        1. Try to parse the scope definition from the model file
+        2. If parsing fails or scope not found, use heuristic matching from scope name
+
         Args:
             model_name: Rails model name (e.g., "Member" or "members")
-            scope_name: Scope name (e.g., "active")
+            scope_name: Scope name (e.g., "active", "for_custom_domain")
 
         Returns:
             List of NormalizedCondition objects from the scope definition
         """
         if not self.project_root:
-            return []
+            # No project context, try heuristic only
+            heuristic_cond = self._infer_condition_from_scope_name(scope_name)
+            return [heuristic_cond] if heuristic_cond else []
 
         # Normalize model name: handle both singular (Member) and plural (members) table names
         # Convert to singular form for model file lookup
@@ -528,25 +615,43 @@ class WhereClauseParser:
                 from .model_scope_analyzer import ModelScopeAnalyzer
                 self._scope_analyzer = ModelScopeAnalyzer(debug=False)
             except ImportError:
-                return []
+                # Fallback to heuristic
+                heuristic_cond = self._infer_condition_from_scope_name(scope_name)
+                result = [heuristic_cond] if heuristic_cond else []
+                self._scope_cache[cache_key] = result
+                return result
 
         # Find the model file (use lowercase singular name)
         model_file = Path(self.project_root) / "app" / "models" / f"{model_name_singular.lower()}.rb"
         if not model_file.exists():
-            self._scope_cache[cache_key] = []
-            return []
+            # Model file not found, try heuristic
+            heuristic_cond = self._infer_condition_from_scope_name(scope_name)
+            result = [heuristic_cond] if heuristic_cond else []
+            self._scope_cache[cache_key] = result
+            return result
 
         # Analyze the model to extract scope definitions
         scopes = self._scope_analyzer.analyze_model(str(model_file))
 
         if scope_name not in scopes:
-            self._scope_cache[cache_key] = []
-            return []
+            # Scope not found in model, try heuristic
+            heuristic_cond = self._infer_condition_from_scope_name(scope_name)
+            result = [heuristic_cond] if heuristic_cond else []
+            self._scope_cache[cache_key] = result
+            return result
 
         # Convert scope's NormalizedClause objects to NormalizedCondition objects
         scope_def = scopes[scope_name]
-        conditions = []
 
+        # If scope has no WHERE clauses (e.g., complex scope that couldn't be parsed),
+        # fall back to heuristic matching
+        if not scope_def.where_clauses:
+            heuristic_cond = self._infer_condition_from_scope_name(scope_name)
+            result = [heuristic_cond] if heuristic_cond else []
+            self._scope_cache[cache_key] = result
+            return result
+
+        conditions = []
         for clause in scope_def.where_clauses:
             # Map operator strings to Operator enum
             operator_map = {

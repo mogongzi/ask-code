@@ -311,8 +311,26 @@ class SQLRailsSearch(BaseTool):
             "max_patterns": max_results
         })
 
-        # Add search type metadata
-        result["search_type"] = "transaction"
+        # Transform source_code_findings into standard matches format
+        matches = []
+        source_findings = result.get("source_code_findings", [])
+
+        for finding in source_findings:
+            # Each finding has search_results with matches
+            search_results = finding.get("search_results", {})
+            finding_matches = search_results.get("matches", [])
+            matches.extend(finding_matches)
+
+        # Sort by confidence (descending)
+        matches.sort(key=lambda m: m.get("confidence", 0), reverse=True)
+
+        # Limit to max_results
+        matches = matches[:max_results]
+
+        # Add standard fields for compatibility with other search modes
+        result["matches"] = matches
+        result["match_count"] = len(matches)
+        result["search_type"] = "transaction_log"  # Match SQL classifier output
 
         if include_explanation:
             result["search_strategy"] = (

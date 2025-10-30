@@ -469,28 +469,31 @@ class CodeSearchEngine:
             raise ValueError(f"Invalid match_mode: {match_mode}. Use 'all' or 'any'.")
 
     def search_file_level_filter(
-        self, initial_pattern: str, filter_patterns: List[str], file_ext: str
+        self, initial_pattern: str, filter_patterns, file_ext: str
     ) -> List[Dict[str, Any]]:
         """
         File-level search-and-filter: Find files matching initial pattern, then filter
-        files that also contain all filter patterns.
+        files that also contain refinement patterns.
+
+        Supports optional patterns that enhance matches but don't exclude files:
+        - Required patterns (optional=False): Files MUST match ALL to be included
+        - Optional patterns (optional=True): Files get bonus if matched, but not excluded if missing
 
         This is more effective than line-level filtering because refinement patterns
         may appear on different lines than the initial pattern.
 
         Example:
-        - Initial: "500" finds 1650 lines across 200 files
-        - File-level filter: Keep only files containing ".limit(" → 15 files
-        - File-level filter: Keep only files containing "Member" → 3 files
-        - Return all matching lines from those 3 files
+        - Initial: "CustomDomainTombstone.for_custom_domain(...).take" finds 2 files
+        - Required filter: ".take" → keeps both files (both match)
+        - Optional filter: "scope :" → app/models/company.rb matches (bonus), lib/multi_domain.rb doesn't (still included)
 
         Args:
             initial_pattern: First pattern to search for (most distinctive)
-            filter_patterns: Additional patterns that must exist in the same FILE
+            filter_patterns: List of SearchPattern objects or pattern strings
             file_ext: File extension to search in
 
         Returns:
-            List of matches from files containing ALL patterns
+            List of matches from files matching ALL required patterns
         """
         if not self.project_root:
             return []
@@ -509,20 +512,34 @@ class CodeSearchEngine:
                 files_with_matches[file_path] = []
             files_with_matches[file_path].append(result)
 
+        # Step 2: Separate required and optional patterns
+        # Support both SearchPattern objects and legacy string patterns
+        required_patterns = []
+        optional_patterns = []
+
+        for pattern in filter_patterns:
+            if hasattr(pattern, 'optional'):  # SearchPattern object
+                if pattern.optional:
+                    optional_patterns.append(pattern.pattern)
+                else:
+                    required_patterns.append(pattern.pattern)
+            else:  # Legacy string pattern (treat as required)
+                required_patterns.append(pattern)
+
         if self.debug_log:
             self.debug_log("🗂️ File-level filtering", {
                 "initial_pattern": initial_pattern,
                 "initial_files": len(files_with_matches),
                 "initial_lines": len(initial_results),
-                "filter_patterns": filter_patterns
+                "required_patterns": len(required_patterns),
+                "optional_patterns": len(optional_patterns)
             })
 
-        # Step 2: For each file, check if it contains ALL filter patterns
+        # Step 3: For each file, check if it contains ALL required patterns
+        # Optional patterns are checked but don't exclude files
         matching_files = []
 
         for file_path in files_with_matches.keys():
-            # Search for each filter pattern in this specific file
-            file_matches_all = True
             full_path = Path(self.project_root) / file_path
 
             if not full_path.exists():
@@ -533,21 +550,24 @@ class CodeSearchEngine:
                 with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
                     file_content = f.read().lower()
 
-                # Check if all filter patterns exist in this file
-                for filter_pattern in filter_patterns:
+                # Check REQUIRED patterns only - all must match
+                file_matches_required = True
+                for filter_pattern in required_patterns:
                     # Try regex match first, fall back to substring
                     import re
                     try:
                         if not re.search(filter_pattern, file_content, re.IGNORECASE):
-                            file_matches_all = False
+                            file_matches_required = False
                             break
                     except re.error:
                         # Invalid regex, use substring match
                         if filter_pattern.lower() not in file_content:
-                            file_matches_all = False
+                            file_matches_required = False
                             break
 
-                if file_matches_all:
+                # Include file if ALL required patterns match
+                # (optional patterns don't affect inclusion)
+                if file_matches_required:
                     matching_files.append(file_path)
 
             except Exception as e:
