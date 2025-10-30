@@ -87,6 +87,22 @@ class PaginationExtractor:
             if params.limit:
                 params.page_size = params.limit
 
+        # Find .take, .first, .last (equivalent to LIMIT 1)
+        # Pattern: .take or .take() or .take(n) or .first or .first() or .last or .last()
+        if not params.has_limit:
+            take_match = re.search(r'\.(take|first|last)\b(?:\s*\(\s*([^)]*)\s*\))?', code, re.IGNORECASE)
+            if take_match:
+                params.has_limit = True
+                arg = take_match.group(2)
+                if arg and arg.strip():
+                    # .take(n) or .first(n)
+                    params.limit = self._resolve_expression(arg.strip(), constants)
+                else:
+                    # .take, .first, .last without arguments = LIMIT 1
+                    params.limit = 1
+                if params.limit:
+                    params.page_size = params.limit
+
         # Find .offset() calls
         offset_match = re.search(r'\.offset\s*\(\s*([^)]+)\s*\)', code, re.IGNORECASE)
         if offset_match:
