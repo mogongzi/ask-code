@@ -28,6 +28,8 @@ from .semantic_sql_analyzer import (
     QueryIntent,
     create_fingerprint
 )
+from .components.where_clause_matcher import WhereClauseMatcher, WhereClauseParser, NormalizedCondition, Operator
+from .components.unified_confidence_scorer import UnifiedConfidenceScorer, ClausePresence
 
 
 @dataclass
@@ -56,6 +58,9 @@ class EnhancedSQLRailsSearch(BaseTool):
             project_root=self.project_root or "",
             debug=debug
         )
+        # Unified WHERE clause matching and confidence scoring (with scope resolution)
+        self.where_matcher = WhereClauseMatcher(project_root=self.project_root)
+        self.confidence_scorer = UnifiedConfidenceScorer()
 
     @property
     def name(self) -> str:
@@ -727,13 +732,12 @@ class EnhancedSQLRailsSearch(BaseTool):
 
     def _calculate_match_completeness(self, snippet: str, analysis: QueryAnalysis) -> Dict[str, Any]:
         """
-        Calculate how completely a code snippet matches the SQL query.
+        Calculate how completely a code snippet matches the SQL query using unified scoring.
 
-        Checks:
-        - WHERE conditions: Are all SQL conditions present in the code?
-        - ORDER BY clause: Does code have .order() if SQL has ORDER BY?
-        - LIMIT clause: Does code have .limit()/.take() if SQL has LIMIT?
-        - OFFSET clause: Does code have .offset() if SQL has OFFSET?
+        NOW USES STRICT SEMANTIC WHERE CLAUSE MATCHING:
+        - Validates operators match exactly (IS NULL vs IS NOT NULL, = vs !=, etc.)
+        - Compares full conditions, not just column names
+        - Uses UnifiedConfidenceScorer for consistent scoring
 
         Args:
             snippet: Rails code snippet
@@ -750,99 +754,81 @@ class EnhancedSQLRailsSearch(BaseTool):
                 "confidence": "high"/"medium"/"low"/"partial"
             }
         """
-        snippet_lower = snippet.lower()
+        # 1. Perform strict WHERE clause matching
+        sql_where_conditions = analysis.where_conditions
 
-        # Count WHERE conditions matched
-        total_conditions = len(analysis.where_conditions)
-        matched_conditions = 0
+        # Convert sql_analysis WHERE conditions to NormalizedCondition format
+        sql_normalized_conditions = []
+        for cond in sql_where_conditions:
+            # Handle IS NULL and IS NOT NULL operators
+            if cond.operator.upper() == "IS":
+                # Check if value indicates NULL or NOT NULL
+                operator = Operator.IS_NULL if cond.value is None else Operator.IS_NOT_NULL
+            else:
+                operator = Operator.from_sqlglot(cond.operator)
 
-        for condition in analysis.where_conditions:
-            col_name = condition.column.name.lower()  # Normalize to lowercase
-            # Check if column appears in the snippet
-            # Handle both hash syntax (:column_name =>) and keyword syntax (column_name:)
-            if (col_name in snippet_lower or
-                f":{col_name}" in snippet_lower or
-                f"{col_name}:" in snippet_lower):
-                matched_conditions += 1
+            sql_normalized_conditions.append(NormalizedCondition(
+                column=cond.column.name.lower(),
+                operator=operator,
+                value=cond.value,
+                raw_pattern=f"{cond.column.name} {cond.operator} {cond.value}"
+            ))
 
-        # Check for ORDER BY clause
-        sql_has_order = analysis.has_order or "order by" in analysis.raw_sql.lower()
-        code_has_order = ".order(" in snippet_lower or ".order " in snippet_lower
+        # Parse WHERE conditions from code
+        code_conditions = self.where_matcher.parser.parse_ruby_code(snippet)
 
-        # Check for LIMIT clause
-        sql_has_limit = analysis.has_limit or "limit" in analysis.raw_sql.lower()
-        code_has_limit = (
-            ".limit(" in snippet_lower or
-            ".take(" in snippet_lower or
-            ".first" in snippet_lower or
-            ".last" in snippet_lower
+        # Match conditions
+        where_match_result = self.where_matcher.match(
+            sql_normalized_conditions,
+            code_conditions
         )
 
-        # Check for OFFSET clause
-        sql_has_offset = "offset" in analysis.raw_sql.lower()
-        code_has_offset = ".offset(" in snippet_lower
+        # 2. Create clause presence object
+        clause_presence = self.confidence_scorer.create_clause_presence(
+            analysis,
+            snippet
+        )
 
-        # Calculate completeness score
-        score = 0.0
-        weights = {
-            "conditions": 0.5,  # WHERE conditions are most important
-            "order": 0.2,
-            "limit": 0.15,
-            "offset": 0.15
-        }
+        # 3. Use unified scorer for final confidence
+        scoring_result = self.confidence_scorer.score_match(
+            where_match_result,
+            clause_presence,
+            pattern_distinctiveness=0.5,  # Default medium distinctiveness
+            sql_analysis=analysis
+        )
 
-        # WHERE conditions score
-        if total_conditions > 0:
-            condition_score = matched_conditions / total_conditions
-            score += condition_score * weights["conditions"]
-        else:
-            score += weights["conditions"]  # No conditions = full score for this part
+        completeness_score = scoring_result["confidence"]
 
-        # ORDER BY score
-        if sql_has_order:
-            if code_has_order:
-                score += weights["order"]
-        else:
-            score += weights["order"]  # No ORDER BY needed = full score
-
-        # LIMIT score
-        if sql_has_limit:
-            if code_has_limit:
-                score += weights["limit"]
-        else:
-            score += weights["limit"]  # No LIMIT needed = full score
-
-        # OFFSET score
-        if sql_has_offset:
-            if code_has_offset:
-                score += weights["offset"]
-        else:
-            score += weights["offset"]  # No OFFSET needed = full score
-
-        # Determine confidence based on completeness
-        if score >= 0.9:
+        # 4. Determine confidence label based on score
+        if completeness_score >= 0.9:
             confidence = "high"
-        elif score >= 0.7:
+        elif completeness_score >= 0.7:
             confidence = "medium"
-        elif score >= 0.4:
+        elif completeness_score >= 0.4:
             confidence = "partial"
         else:
             confidence = "low"
 
+        # 5. Build missing clauses list
+        missing_clauses = []
+        if where_match_result.missing:
+            missing_clauses.append(f"WHERE: {len(where_match_result.missing)} conditions")
+        if clause_presence.sql_has_order and not clause_presence.code_has_order:
+            missing_clauses.append("ORDER BY")
+        if clause_presence.sql_has_limit and not clause_presence.code_has_limit:
+            missing_clauses.append("LIMIT")
+        if clause_presence.sql_has_offset and not clause_presence.code_has_offset:
+            missing_clauses.append("OFFSET")
+
         return {
-            "matched_conditions": matched_conditions,
-            "total_conditions": total_conditions,
-            "has_order": code_has_order if sql_has_order else None,
-            "has_limit": code_has_limit if sql_has_limit else None,
-            "has_offset": code_has_offset if sql_has_offset else None,
-            "completeness_score": round(score, 2),
+            "matched_conditions": len(where_match_result.matched),
+            "total_conditions": len(sql_normalized_conditions),
+            "has_order": clause_presence.code_has_order if clause_presence.sql_has_order else None,
+            "has_limit": clause_presence.code_has_limit if clause_presence.sql_has_limit else None,
+            "has_offset": clause_presence.code_has_offset if clause_presence.sql_has_offset else None,
+            "completeness_score": round(completeness_score, 2),
             "confidence": confidence,
-            "missing_clauses": self._identify_missing_clauses(
-                sql_has_order, code_has_order,
-                sql_has_limit, code_has_limit,
-                sql_has_offset, code_has_offset,
-                matched_conditions, total_conditions
-            )
+            "missing_clauses": missing_clauses
         }
 
     def _identify_missing_clauses(

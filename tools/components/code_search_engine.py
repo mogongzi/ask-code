@@ -18,6 +18,9 @@ class CodeSearchEngine:
     def __init__(self, project_root: Optional[str], debug_log: Optional[Callable[[str, Any], None]] = None) -> None:
         self.project_root = project_root
         self.debug_log = debug_log
+        self._search_cache: Dict[tuple, List[Dict[str, Any]]] = {}  # Cache for search results
+        self._cache_hits = 0
+        self._cache_misses = 0
 
     def _rel_path(self, file_path: str) -> str:
         try:
@@ -45,6 +48,21 @@ class CodeSearchEngine:
 
         return any(pattern in path_lower for pattern in test_patterns)
 
+    def clear_cache(self) -> None:
+        """Clear the search cache. Useful between user queries."""
+        self._search_cache.clear()
+        self._cache_hits = 0
+        self._cache_misses = 0
+
+    def get_cache_stats(self) -> Dict[str, int]:
+        """Get cache statistics."""
+        return {
+            "hits": self._cache_hits,
+            "misses": self._cache_misses,
+            "size": len(self._search_cache),
+            "hit_rate": self._cache_hits / (self._cache_hits + self._cache_misses) if (self._cache_hits + self._cache_misses) > 0 else 0.0
+        }
+
     def search(self, pattern: str, file_ext: str) -> List[Dict[str, Any]]:
         """
         Search for pattern in files with given extension.
@@ -61,6 +79,20 @@ class CodeSearchEngine:
                 self.debug_log("❌ No project root set", None)
             return []
 
+        # Check cache first
+        cache_key = (pattern, file_ext, self.project_root)
+        if cache_key in self._search_cache:
+            self._cache_hits += 1
+            if self.debug_log:
+                self.debug_log("✓ Cache hit", {
+                    "pattern": pattern,
+                    "file_ext": file_ext,
+                    "cache_stats": f"hits={self._cache_hits}, misses={self._cache_misses}"
+                })
+            return self._search_cache[cache_key]
+
+        self._cache_misses += 1
+
         cmd = [
             "rg", "--line-number", "--with-filename", "-i",
             "--type-add", f"target:*.{file_ext}",
@@ -74,6 +106,7 @@ class CodeSearchEngine:
                 "pattern": pattern,
                 "file_ext": file_ext,
                 "command": " ".join(cmd),
+                "cache_stats": f"hits={self._cache_hits}, misses={self._cache_misses}"
             })
 
         try:
@@ -104,10 +137,14 @@ class CodeSearchEngine:
                     "stderr": result.stderr[:200] if result.stderr else None,
                 })
 
+            # Cache the results before returning
+            self._search_cache[cache_key] = matches
             return matches
         except Exception as e:
             if self.debug_log:
                 self.debug_log("❌ Ripgrep error", f"{type(e).__name__}: {e}")
+            # Cache empty results for errors to avoid retrying
+            self._search_cache[cache_key] = []
             return []
 
     def search_with_context(

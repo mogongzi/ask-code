@@ -24,6 +24,11 @@ from .rails_search_rules import (
     SearchPattern,
     SearchLocation
 )
+from .model_scope_analyzer import ModelScopeAnalyzer
+from .sql_scope_matcher import SQLToScopeMatcher
+from .where_clause_matcher import WhereClauseMatcher, WhereClauseParser
+from .unified_confidence_scorer import UnifiedConfidenceScorer, ClausePresence
+from .rails_inflection import singularize
 
 
 @dataclass
@@ -58,6 +63,22 @@ class ProgressiveSearchEngine:
         self.project_root = project_root
         self.debug = debug
         self.rule_set = RailsSearchRuleSet()
+        self.where_matcher = WhereClauseMatcher(project_root=project_root)
+        self.confidence_scorer = UnifiedConfidenceScorer()
+
+    def _singularize_table_name(self, table_name: str) -> str:
+        """
+        Convert Rails table name (plural) to model file name (singular).
+
+        Uses Rails ActiveSupport inflection rules for accurate singularization.
+
+        Examples:
+            members -> member
+            companies -> company
+            people -> person
+            analyses -> analysis
+        """
+        return singularize(table_name)
 
     def search_progressive(
         self,
@@ -85,13 +106,25 @@ class ProgressiveSearchEngine:
         if self.debug:
             print(f"\n🔍 Progressive Search for {sql_analysis.primary_table.name}")
 
+        # Step 0: Try semantic scope matching first (NEW!)
+        semantic_patterns = self._try_semantic_matching(sql_analysis)
+
         # Step 1: Get applicable domain rules
         applicable_rules = self.rule_set.get_applicable_rules(sql_analysis)
         if self.debug:
             print(f"   Applicable rules: {[type(r).__name__ for r in applicable_rules]}")
 
         # Step 2: Build and rank all search patterns
-        all_patterns = self._collect_and_rank_patterns(applicable_rules, sql_analysis)
+        if semantic_patterns:
+            if self.debug:
+                print(f"   ✓ Semantic match found: using scope-based search")
+            # Combine semantic patterns (high priority) with rule patterns (fallback)
+            all_patterns = semantic_patterns + self._collect_and_rank_patterns(applicable_rules, sql_analysis)
+        else:
+            if self.debug:
+                print(f"   → No semantic match: using pattern-based search")
+            # Use only pattern-based approach
+            all_patterns = self._collect_and_rank_patterns(applicable_rules, sql_analysis)
         if self.debug:
             print(f"   Collected {len(all_patterns)} search patterns")
             for p in all_patterns[:5]:
@@ -134,10 +167,48 @@ class ProgressiveSearchEngine:
             patterns = rule.build_search_patterns(sql_analysis)
             all_patterns.extend(patterns)
 
-        # Sort by distinctiveness (rare → common)
-        all_patterns.sort(key=lambda p: p.distinctiveness, reverse=True)
+        # Deduplicate patterns: group by pattern string, keep highest distinctiveness
+        pattern_dict = {}
+        duplicates_eliminated = 0
 
-        return all_patterns
+        for p in all_patterns:
+            key = (p.pattern, p.clause_type)  # Use pattern + clause_type as key
+
+            if key not in pattern_dict:
+                pattern_dict[key] = p
+            else:
+                duplicates_eliminated += 1
+                existing = pattern_dict[key]
+
+                # Keep the one with higher distinctiveness
+                if p.distinctiveness > existing.distinctiveness:
+                    # Merge descriptions
+                    merged_desc = f"{p.description} (also: {existing.description})"
+                    pattern_dict[key] = SearchPattern(
+                        pattern=p.pattern,
+                        distinctiveness=p.distinctiveness,
+                        description=merged_desc,
+                        clause_type=p.clause_type
+                    )
+                else:
+                    # Keep existing, but merge descriptions
+                    merged_desc = f"{existing.description} (also: {p.description})"
+                    pattern_dict[key] = SearchPattern(
+                        pattern=existing.pattern,
+                        distinctiveness=existing.distinctiveness,
+                        description=merged_desc,
+                        clause_type=existing.clause_type
+                    )
+
+        deduplicated_patterns = list(pattern_dict.values())
+
+        if self.debug and duplicates_eliminated > 0:
+            print(f"   ⚡ Eliminated {duplicates_eliminated} duplicate patterns (before: {len(all_patterns)}, after: {len(deduplicated_patterns)})")
+
+        # Sort by distinctiveness (rare → common)
+        deduplicated_patterns.sort(key=lambda p: p.distinctiveness, reverse=True)
+
+        return deduplicated_patterns
 
     def _search_with_progressive_refinement(
         self,
@@ -447,6 +518,46 @@ class ProgressiveSearchEngine:
             # Fall back to simple substring match if regex invalid
             return pattern.lower() in content.lower()
 
+    def _expand_context(self, file_path: str, line_num: int, lines_before: int = 3, lines_after: int = 5) -> str:
+        """
+        Expand context by reading lines before AND after the matched line.
+
+        This helps capture association chains that might be split across lines:
+        Example:
+            Line 10: company.members
+            Line 11:   .active        ← matched line
+            Line 12:   .offset(...)
+            Line 13:   .limit(...)
+            Line 14:   .order(...)
+
+        Args:
+            file_path: Full path to the file
+            line_num: Line number of the match (1-indexed)
+            lines_before: Number of lines to read before the match
+            lines_after: Number of lines to read after the match
+
+        Returns:
+            Expanded content with context (joined with single space for continuity)
+        """
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+
+            # Calculate range (line_num is 1-indexed, list is 0-indexed)
+            start_idx = max(0, line_num - lines_before - 1)
+            end_idx = min(len(lines), line_num + lines_after)
+
+            # Get context lines and join them
+            context_lines = [line.strip() for line in lines[start_idx:end_idx]]
+
+            # Join with space to create continuous code snippet
+            expanded = ' '.join(context_lines)
+            return expanded
+
+        except Exception:
+            # If we can't read the file, return empty
+            return ""
+
     def _validate_and_score(
         self,
         results: List[Dict[str, Any]],
@@ -454,103 +565,117 @@ class ProgressiveSearchEngine:
         rules: List[RailsSearchRule]
     ) -> List[SearchResult]:
         """
-        Validate matches and calculate confidence scores.
+        Validate matches and calculate confidence scores using unified scoring system.
 
         Confidence based on:
-        - Number of matched patterns (more = higher)
-        - Rule-specific validation scores
-        - Completeness (all SQL clauses accounted for)
+        - WHERE clause completeness (strict semantic matching)
+        - ORDER BY, LIMIT, OFFSET presence
+        - Pattern distinctiveness
         """
         scored_results = []
 
         for result in results:
-            # Calculate base confidence from matched patterns
+            content = result.get("content", "")
             matched_patterns = result.get("matched_patterns", [])
-            base_confidence = min(1.0, len(matched_patterns) * 0.25)
 
-            # Get rule-specific validation scores
-            rule_confidences = []
-            for rule in rules:
-                rule_score = rule.validate_match(result, sql_analysis)
-                rule_confidences.append(rule_score)
+            # Expand context to capture association chains on previous AND following lines
+            # NOTE: Limited expansion to avoid including unrelated control flow branches
+            # (e.g., if/else branches that would incorrectly add conditions from other code paths)
+            file_path = result.get("file", "")
+            line_num = result.get("line", 0)
+            if file_path and line_num > 0:
+                # Try to get full file path for context expansion
+                from pathlib import Path
+                full_path = Path(self.project_root) / file_path if self.project_root else file_path
+                # Reduced lines_after from 5 to 2 to avoid including else branches
+                expanded_content = self._expand_context(str(full_path), line_num, lines_before=3, lines_after=2)
 
-            # Average rule confidence
-            avg_rule_confidence = sum(rule_confidences) / len(rule_confidences) if rule_confidences else 0.5
+                # Use expanded content if available, otherwise use original
+                if expanded_content:
+                    content = expanded_content
 
-            # Final confidence is weighted average
-            final_confidence = (base_confidence * 0.4) + (avg_rule_confidence * 0.6)
+            # 1. Perform strict WHERE clause matching
+            sql_where_conditions = getattr(sql_analysis, "where_conditions", [])
 
-            # Build "why" explanation
-            why = [
-                f"Matched {len(matched_patterns)} patterns: {', '.join(matched_patterns[:3])}"
-            ]
+            # Debug: Print content being analyzed
+            if self.debug and "find_all_active" in content:
+                print(f"\n🔍 DEBUG: Analyzing content for WHERE clause matching:")
+                print(f"   File: {file_path}:{line_num}")
+                print(f"   Content length: {len(content)}")
+                print(f"   Content: {repr(content)}")
 
-            # Add completeness check
-            completeness = self._check_completeness(result, sql_analysis)
-            if completeness["missing"]:
-                why.append(f"Missing: {', '.join(completeness['missing'])}")
-                final_confidence *= 0.8  # Reduce confidence if incomplete
-            else:
-                why.append("All SQL clauses accounted for")
-                final_confidence = min(1.0, final_confidence * 1.2)  # Boost confidence
+                # Also parse and show what we extract
+                code_conditions = self.where_matcher.parser.parse_ruby_code(content)
+                print(f"   Extracted {len(code_conditions)} WHERE conditions:")
+                for cond in code_conditions:
+                    print(f"     - {cond}")
+
+            # Convert sql_analysis WHERE conditions to NormalizedCondition format
+            from .where_clause_matcher import NormalizedCondition, Operator
+            sql_normalized_conditions = []
+            for cond in sql_where_conditions:
+                # Handle IS NULL and IS NOT NULL operators
+                if cond.operator.upper() == "IS_NULL":
+                    operator = Operator.IS_NULL
+                elif cond.operator.upper() == "IS_NOT_NULL":
+                    operator = Operator.IS_NOT_NULL
+                elif cond.operator.upper() == "IS":
+                    # Legacy handling: Check if value indicates NULL or NOT NULL
+                    operator = Operator.IS_NULL if cond.value is None else Operator.IS_NOT_NULL
+                else:
+                    operator = Operator.from_sqlglot(cond.operator)
+
+                sql_normalized_conditions.append(NormalizedCondition(
+                    column=cond.column.name.lower(),
+                    operator=operator,
+                    value=cond.value,
+                    raw_pattern=f"{cond.column.name} {cond.operator} {cond.value}"
+                ))
+
+            # Parse WHERE conditions from code
+            code_conditions = self.where_matcher.parser.parse_ruby_code(content)
+
+            # Match conditions
+            where_match_result = self.where_matcher.match(
+                sql_normalized_conditions,
+                code_conditions
+            )
+
+            # 2. Create clause presence object
+            clause_presence = self.confidence_scorer.create_clause_presence(
+                sql_analysis,
+                content
+            )
+
+            # 3. Calculate pattern distinctiveness (based on number of matched patterns)
+            # More patterns = higher distinctiveness
+            pattern_distinctiveness = min(1.0, len(matched_patterns) * 0.25)
+
+            # 4. Use unified scorer for final confidence
+            scoring_result = self.confidence_scorer.score_match(
+                where_match_result,
+                clause_presence,
+                pattern_distinctiveness,
+                sql_analysis
+            )
+
+            final_confidence = scoring_result["confidence"]
+            why = scoring_result["why"]
+
+            # Add pattern match info to explanation
+            if matched_patterns:
+                why.insert(0, f"Matched {len(matched_patterns)} patterns: {', '.join(matched_patterns[:3])}")
 
             scored_results.append(SearchResult(
                 file=result.get("file", ""),
                 line=result.get("line", 0),
-                content=result.get("content", ""),
+                content=content,
                 matched_patterns=matched_patterns,
                 confidence=final_confidence,
                 why=why
             ))
 
         return scored_results
-
-    def _check_completeness(
-        self,
-        result: Dict[str, Any],
-        sql_analysis: Any
-    ) -> Dict[str, Any]:
-        """
-        Check if the match accounts for all SQL clauses.
-
-        Returns:
-            {
-                "complete": True/False,
-                "missing": ["LIMIT", "ORDER BY", ...]
-            }
-        """
-        content = result.get("content", "").lower()
-        missing = []
-
-        # Check LIMIT
-        if getattr(sql_analysis, "has_limit", False):
-            if ".limit(" not in content and ".take(" not in content:
-                missing.append("LIMIT")
-
-        # Check OFFSET
-        if "offset" in sql_analysis.raw_sql.lower():
-            if ".offset(" not in content:
-                missing.append("OFFSET")
-
-        # Check ORDER BY
-        if getattr(sql_analysis, "has_order", False):
-            if ".order(" not in content:
-                missing.append("ORDER BY")
-
-        # Check WHERE conditions (at least some should be present)
-        where_conditions = getattr(sql_analysis, "where_conditions", [])
-        if where_conditions:
-            matched_conditions = sum(
-                1 for cond in where_conditions
-                if cond.column.name.lower() in content
-            )
-            if matched_conditions == 0:
-                missing.append("WHERE conditions")
-
-        return {
-            "complete": len(missing) == 0,
-            "missing": missing
-        }
 
     def _get_merged_search_locations(
         self,
@@ -585,6 +710,83 @@ class ProgressiveSearchEngine:
             return "erb"
         else:
             return "rb"  # Default to Ruby
+
+    def _try_semantic_matching(self, sql_analysis: Any) -> List[SearchPattern]:
+        """
+        Try to match SQL WHERE clauses to Rails scopes semantically.
+
+        This is the NEW semantic matching approach that:
+        1. Reads the model file
+        2. Extracts all scope definitions
+        3. Matches SQL WHERE clauses to scopes
+        4. Returns high-priority search patterns based on matched scopes
+
+        Returns:
+            List of SearchPattern objects if semantic match found, empty list otherwise
+        """
+        # Check if we have a model name
+        if not sql_analysis.primary_model:
+            return []
+
+        # Construct model file path
+        # Convert plural table name to singular model file name (e.g., "members" -> "member.rb")
+        model_name_singular = self._singularize_table_name(sql_analysis.primary_table.name)
+        model_file = Path(self.project_root) / "app" / "models" / f"{model_name_singular}.rb"
+
+        if not model_file.exists():
+            if self.debug:
+                print(f"   Model file not found: {model_file}")
+            return []
+
+        # Step 1: Extract scopes from model file
+        analyzer = ModelScopeAnalyzer(debug=self.debug)
+        scopes = analyzer.analyze_model(str(model_file))
+
+        if not scopes:
+            if self.debug:
+                print(f"   No scopes found in model")
+            return []
+
+        # Step 2: Match SQL to scopes
+        matcher = SQLToScopeMatcher(debug=self.debug)
+        matches = matcher.find_matching_scopes(sql_analysis, scopes)
+
+        if not matches:
+            if self.debug:
+                print(f"   No semantic scope matches")
+            return []
+
+        # Step 3: Use best match if confidence is high
+        best_match = matches[0]
+        if best_match.confidence < 0.8:
+            if self.debug:
+                print(f"   Best match '{best_match.name}' has low confidence ({best_match.confidence:.2f})")
+            return []
+
+        # Step 4: Generate search patterns based on matched scope
+        patterns = []
+
+        if self.debug:
+            print(f"   Semantic match: {best_match.name} (confidence: {best_match.confidence:.2f})")
+
+        # Primary pattern: Model.scope_name with LIMIT/OFFSET
+        if getattr(sql_analysis, 'has_limit', False) or getattr(sql_analysis, 'has_offset', False):
+            patterns.append(SearchPattern(
+                pattern=rf"{sql_analysis.primary_model}\.{best_match.name}.*\.(?:limit|offset)\(",
+                distinctiveness=0.95,  # Very high - semantic match
+                description=f"{sql_analysis.primary_model}.{best_match.name} scope (semantic match)",
+                clause_type="semantic_scope_match"
+            ))
+
+        # Fallback pattern: Just Model.scope_name
+        patterns.append(SearchPattern(
+            pattern=rf"{sql_analysis.primary_model}\.{best_match.name}\b",
+            distinctiveness=0.9,  # High - semantic match
+            description=f"{sql_analysis.primary_model}.{best_match.name} scope usage (semantic)",
+            clause_type="semantic_scope_usage"
+        ))
+
+        return patterns
 
     def _deduplicate_results(
         self,

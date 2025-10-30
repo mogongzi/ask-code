@@ -77,36 +77,19 @@ class LimitOffsetRule(RailsSearchRule):
         """Build LIMIT/OFFSET search patterns.
 
         Strategy:
-        1. Search for exact LIMIT value (e.g., "500") - VERY distinctive
-        2. Search for .limit( and .offset( methods
-        3. Search for pagination helpers
+        1. Search for .limit( and .offset( methods (structural patterns)
+        2. Search for pagination helpers
+
+        Note: We use structural patterns (e.g., .limit\() instead of literal values
+        (e.g., .limit(500)) because values often come from constants, variables, or config.
         """
         patterns = []
 
-        # Extract LIMIT value from SQL
-        limit_value = self._extract_limit_value(sql_analysis)
-        if limit_value:
-            # Exact limit value is VERY distinctive (few files use same limit)
-            patterns.append(SearchPattern(
-                pattern=str(limit_value),
-                distinctiveness=0.9,  # Very rare
-                description=f"Exact LIMIT value: {limit_value}",
-                clause_type="limit"
-            ))
-
-            # Also search for .limit(VALUE) pattern
-            patterns.append(SearchPattern(
-                pattern=rf"\.limit\({limit_value}\)",
-                distinctiveness=0.85,
-                description=f".limit({limit_value}) method call",
-                clause_type="limit"
-            ))
-
-        # Generic .limit( pattern (less distinctive)
+        # Generic .limit( pattern - structural, not value-specific
         patterns.append(SearchPattern(
             pattern=r"\.limit\(",
-            distinctiveness=0.5,
-            description=".limit() method call (generic)",
+            distinctiveness=0.6,  # Moderately distinctive
+            description=".limit() method call",
             clause_type="limit"
         ))
 
@@ -124,23 +107,35 @@ class LimitOffsetRule(RailsSearchRule):
     def validate_match(self, match: Dict[str, Any], sql_analysis: Any) -> float:
         """Validate LIMIT/OFFSET match.
 
+        REQUIRED:
+        - Model name MUST be present in the content
+
         High confidence if:
+        - Has .limit() present (structural match)
         - Has both .limit() and .offset() when SQL has both
-        - Has correct LIMIT value
         - Has ORDER BY when SQL has ORDER BY
+
+        Note: We check for structural patterns, not literal values, because
+        values often come from constants, variables, or configuration.
         """
         content = match.get("content", "").lower()
-        confidence = 0.5  # Base confidence
 
-        # Check LIMIT value
-        limit_value = self._extract_limit_value(sql_analysis)
-        if limit_value and str(limit_value) in content:
-            confidence += 0.3
+        # REQUIRE model name to be present - reject if wrong model
+        if sql_analysis.primary_model:
+            model_lower = sql_analysis.primary_model.lower()
+            if model_lower not in content:
+                return 0.0  # REJECT - wrong model or no model reference
+
+        confidence = 0.6  # Base confidence (model name is present)
+
+        # Check for .limit( presence (structural check)
+        if ".limit(" in content:
+            confidence += 0.2
 
         # Check OFFSET presence
         if sql_analysis.has_offset:
             if ".offset(" in content:
-                confidence += 0.1
+                confidence += 0.2
             else:
                 confidence -= 0.2  # Missing expected clause
 
@@ -164,10 +159,23 @@ class LimitOffsetRule(RailsSearchRule):
 class ScopeDefinitionRule(RailsSearchRule):
     """WHERE clauses → Model scopes and constants.
 
-    Domain knowledge:
+    NOTE: This rule provides FALLBACK patterns only. The primary scope matching
+    is now done semantically by ModelScopeAnalyzer + SQLToScopeMatcher at the
+    engine level, which:
+    - Reads the actual model file
+    - Extracts ALL scopes (no hardcoded names)
+    - Matches SQL WHERE clauses to scopes semantically
+    - Generates targeted search patterns based on matched scopes
+
+    This rule's patterns are used when:
+    - Model file doesn't exist
+    - No scopes are defined in the model
+    - No semantic match is found (confidence < 0.8)
+
+    Domain knowledge (for fallback patterns):
     - WHERE conditions often defined as scopes in models
-    - Constants like CANONICAL_COND, ACTIVE_COND combine multiple WHERE clauses
-    - Scope chains: .active → .not_disabled → .all_canonical
+    - Scope chains: Model.scope1.scope2.limit
+    - Generic scope usage patterns
     """
 
     def get_search_locations(self) -> List[SearchLocation]:
@@ -183,216 +191,104 @@ class ScopeDefinitionRule(RailsSearchRule):
         """Build scope/constant search patterns.
 
         Strategy:
-        1. Search for common Rails scope chains (Model.active.limit, Model.enabled.offset)
-        2. Search for column names in scope definitions
-        3. Search for constant names (e.g., CANONICAL_COND, ACTIVE_COND)
-        4. Search for scope names inferred from WHERE conditions
+        1. Search for Model name with method chains (structural, not specific scope names)
+        2. Search for generic scope keyword (for scope definitions)
+        3. Search for common constant patterns (COND, CONDITION)
+
+        Note: We avoid hardcoding specific scope names or prefixes because:
+        - Rails apps have infinite possible scope names based on business logic
+        - Scope names often don't match SQL column names
+        - We can't predict custom naming conventions
         """
         patterns = []
 
-        # === NEW: Scope chain patterns (very common in Rails) ===
-        # These patterns catch scope chains like: Member.active.limit(500).offset(1000)
+        # === Structural patterns for Model method chains ===
         if sql_analysis.primary_model:
-            # Common Rails scope names for WHERE conditions
-            common_scope_names = [
-                "active",      # Most common: WHERE active = true, disabled_at IS NULL, etc.
-                "enabled",     # WHERE enabled = true
-                "visible",     # WHERE visible = true
-                "published",   # WHERE published = true
-                "valid",       # WHERE valid = true
-                "available",   # WHERE available = true
-            ]
-
-            # If SQL has LIMIT, search for Model.scope_name (will be refined with .limit)
+            # Generic scope chain: Model.anything.anything.limit
+            # This catches ALL scope chains without assuming specific scope names
             if getattr(sql_analysis, "has_limit", False):
-                for scope_name in common_scope_names:
-                    # Primary pattern: Model.scope_name with nearby .limit
-                    patterns.append(SearchPattern(
-                        pattern=rf"{sql_analysis.primary_model}\.{scope_name}\..*\.limit",
-                        distinctiveness=0.75,  # High distinctiveness
-                        description=f"{sql_analysis.primary_model}.{scope_name}...limit scope chain",
-                        clause_type="scope_chain"
-                    ))
-
-                    # Fallback: Just Model.scope_name (to handle multi-line chains)
-                    patterns.append(SearchPattern(
-                        pattern=rf"{sql_analysis.primary_model}\.{scope_name}\b",
-                        distinctiveness=0.65,  # Lower, will need refinement
-                        description=f"{sql_analysis.primary_model}.{scope_name} scope usage",
-                        clause_type="scope_usage"
-                    ))
-
-            # If SQL has OFFSET, search for Model.scope_name.offset patterns
-            if getattr(sql_analysis, "has_offset", False):
-                for scope_name in common_scope_names:
-                    patterns.append(SearchPattern(
-                        pattern=rf"{sql_analysis.primary_model}\.{scope_name}\..*\.offset",
-                        distinctiveness=0.75,
-                        description=f"{sql_analysis.primary_model}.{scope_name}...offset scope chain",
-                        clause_type="scope_chain"
-                    ))
-
-            # Generic scope chain with limit (only when we can't infer specific scopes)
-            # This is a fallback pattern when we have no WHERE conditions to guide us
-            where_columns = [
-                cond.column.name
-                for cond in getattr(sql_analysis, "where_conditions", [])
-            ]
-            if getattr(sql_analysis, "has_limit", False) and len(where_columns) == 0:
                 patterns.append(SearchPattern(
-                    pattern=rf"{sql_analysis.primary_model}\.\w+\..*\.limit",
+                    pattern=rf"{sql_analysis.primary_model}\.\w+.*\.limit\(",
                     distinctiveness=0.65,
-                    description=f"{sql_analysis.primary_model}.scope...limit chain",
-                    clause_type="scope_chain_generic"
+                    description=f"{sql_analysis.primary_model} scope chain with .limit",
+                    clause_type="scope_chain"
                 ))
 
-        # Extract WHERE condition columns
-        where_columns = [
-            cond.column.name
-            for cond in getattr(sql_analysis, "where_conditions", [])
-        ]
+            # Generic scope chain: Model.anything.anything.offset
+            if getattr(sql_analysis, "has_offset", False):
+                patterns.append(SearchPattern(
+                    pattern=rf"{sql_analysis.primary_model}\.\w+.*\.offset\(",
+                    distinctiveness=0.7,
+                    description=f"{sql_analysis.primary_model} scope chain with .offset",
+                    clause_type="scope_chain"
+                ))
 
-        # Search for constants that might combine multiple WHERE conditions
-        # Pattern: Multiple columns in same constant = distinctive
-        if len(where_columns) >= 2:
-            # Search for lines with multiple column names (likely a constant)
-            # This is distinctive because constants bundle multiple conditions
+            # Generic: Model name followed by method call (very broad)
             patterns.append(SearchPattern(
-                pattern=rf"(COND|CONDITION)",  # Common constant naming
-                distinctiveness=0.8,
-                description="Constant definitions (COND, CONDITION)",
-                clause_type="where_constant"
+                pattern=rf"{sql_analysis.primary_model}\.\w+",
+                distinctiveness=0.4,
+                description=f"{sql_analysis.primary_model} method call",
+                clause_type="model_usage"
             ))
 
-        # Search for scope definitions with specific columns
-        for col in where_columns:
-            # Handle both: scope :name, -> { ... } and scope(:name, lambda do ... end)
-            # Also match if column name appears in the scope name (e.g., for_custom_domain)
-            # Pattern explanation:
-            # - scope\s* : 'scope' followed by optional whitespace
-            # - (?:[:(])? : optionally followed by : or ( (non-capturing)
-            # - \s* : optional whitespace
-            # - :\w* : colon followed by optional word chars (scope name prefix)
-            # - {col} : the column name we're looking for
-            patterns.append(SearchPattern(
-                pattern=rf"scope\s*(?:[:(])?\s*:\w*{col}",
-                distinctiveness=0.6,
-                description=f"Scope definition filtering by {col}",
-                clause_type="where_scope"
-            ))
-
-        # Search for scope usage patterns - infer likely scope names from WHERE columns
-        if sql_analysis.primary_model and where_columns:
-            # Infer likely scope names from column names
-            # Example: custom_domain column → likely scope: for_custom_domain
-            for col in where_columns:
-                # Common Rails scope naming patterns:
-                # - for_<column>
-                # - by_<column>
-                # - with_<column>
-                scope_name_patterns = [
-                    f"for_{col}",
-                    f"by_{col}",
-                    f"with_{col}",
-                ]
-
-                for scope_name in scope_name_patterns:
-                    patterns.append(SearchPattern(
-                        pattern=rf"{sql_analysis.primary_model}\.{scope_name}\(",
-                        distinctiveness=0.7,  # Higher distinctiveness for specific scope calls
-                        description=f"{sql_analysis.primary_model}.{scope_name}() scope call",
-                        clause_type="where_scope_usage"
-                    ))
+        # Search for generic scope definitions (not column-specific)
+        # This finds ANY scope definition in model files
+        patterns.append(SearchPattern(
+            pattern=r"scope\s+:",
+            distinctiveness=0.5,
+            description="Scope definition (generic)",
+            clause_type="scope_definition"
+        ))
 
         return patterns
 
     def validate_match(self, match: Dict[str, Any], sql_analysis: Any) -> float:
         """Validate scope/constant match.
 
-        High confidence if match contains the EXACT WHERE condition columns.
-        Heavily penalize if code has EXTRA columns not in SQL (different query).
-        Filter out false positives (generic ActiveRecord methods, column references).
+        REQUIRED:
+        - Model name MUST be present in the content
+
+        High confidence if:
+        - Query chain structure matches (has .limit, .offset, .order as expected)
+        - Is a scope definition or scope chain usage
+
+        Note: We use structural validation, not column name matching, because:
+        - Column names in SQL rarely match scope names in Ruby
+        - Scope abstractions hide SQL details
+        - We can't reliably extract columns from scopes without AST parsing
         """
         import re
 
         content = match.get("content", "").lower()
-        pattern_type = match.get("pattern_type", "")
 
-        # Filter out generic ActiveRecord method calls (not scope usage)
-        if pattern_type == "where_scope_usage":
-            generic_methods = [
-                r'\.find_by\(',
-                r'\.find_or_create_by\(',
-                r'\.where\(',
-                r'\.find\(',
-                r'\.create\(',
-                r'\.update\(',
-                r'\.destroy\(',
-                r'\.find_from_param\(',
-                r'has_many\s+:',
-                r'has_one\s+:',
-                r'belongs_to\s+:'
-            ]
+        # REQUIRE model name to be present - reject if wrong model
+        if sql_analysis.primary_model:
+            model_lower = sql_analysis.primary_model.lower()
+            if model_lower not in content:
+                return 0.0  # REJECT - wrong model or no model reference
 
-            for generic_pattern in generic_methods:
-                if re.search(generic_pattern, content, re.IGNORECASE):
-                    # This is a generic ActiveRecord call, not a scope usage
-                    return 0.0  # Reject this match
+        confidence = 0.6  # Base confidence (model name is present)
 
-        # Filter out column-only references (e.g., custom_domain: in hash syntax)
-        where_columns = [
-            cond.column.name.lower()
-            for cond in getattr(sql_analysis, "where_conditions", [])
-        ]
+        # Check for query chain structure matching SQL
+        if getattr(sql_analysis, "has_limit", False):
+            if ".limit(" in content:
+                confidence += 0.15
 
-        # Check if this is just a column reference in hash syntax (key: value)
-        if where_columns:
-            for col in where_columns:
-                # Pattern: column_name: (hash key syntax)
-                if re.search(rf'\b{col}\s*:', content):
-                    # Check if this is NOT part of a scope definition
-                    if not re.search(r'\bscope\b', content, re.IGNORECASE):
-                        # This is just a column reference, not a scope call
-                        # Still give some score if it's a valid usage, but lower
-                        pass  # Continue with normal scoring
+        if getattr(sql_analysis, "has_offset", False):
+            if ".offset(" in content:
+                confidence += 0.15
+            else:
+                confidence -= 0.1  # Missing expected clause
 
-        if not where_columns:
-            return 0.5
+        if getattr(sql_analysis, "has_order", False):
+            if ".order(" in content:
+                confidence += 0.1
 
-        # Count how many SQL WHERE columns appear in the code
-        matched_columns = sum(1 for col in where_columns if col in content)
+        # Bonus for scope definitions (in model files)
+        if "scope" in content:
+            confidence += 0.1
 
-        # Base confidence from SQL columns present in code
-        confidence = matched_columns / len(where_columns)
-
-        # Check for EXTRA columns in code that aren't in SQL
-        # Extract columns from common Rails patterns:
-        # - where(column: value)
-        # - find_by(column: value, column2: value)
-        # - scope with where conditions
-        code_column_patterns = [
-            r'where\s*\(\s*(\w+):',           # where(column:
-            r'find_by\s*\(\s*(\w+):',         # find_by(column:
-            r'(\w+)\s*:\s*[\w\.\[\]$]+',      # column: value (broader match)
-        ]
-
-        code_columns = set()
-        for pattern in code_column_patterns:
-            matches = re.findall(pattern, content)
-            code_columns.update(m for m in matches if m not in ['lambda', 'do', 'end'])
-
-        # If we found explicit column references in code, check for extras
-        if code_columns:
-            sql_column_set = set(where_columns)
-            extra_columns = code_columns - sql_column_set
-
-            if extra_columns:
-                # Code has WHERE conditions not in SQL = DIFFERENT QUERY
-                # Apply severe penalty (this is likely a false positive)
-                penalty = 0.3  # Reduce confidence to 30% or less
-                confidence *= penalty
-
-        return confidence
+        return min(1.0, max(0.0, confidence))
 
 
 class AssociationRule(RailsSearchRule):
@@ -416,68 +312,80 @@ class AssociationRule(RailsSearchRule):
         """Build association search patterns.
 
         Strategy:
-        1. Extract foreign keys from WHERE conditions
-        2. Search for association wrapper methods (e.g., find_all_active, get_all_members)
-        3. Search for association wrapper calls (object.find_*, object.get_*)
-        4. Search for association usage patterns
+        1. Search for generic method chains with .limit/.offset
+        2. Search for has_many/belongs_to declarations (structural)
+
+        Note: We avoid hardcoding specific wrapper method prefixes because:
+        - Rails apps use infinite naming conventions
+        - Association methods vary by business domain
+        - We can't predict custom method names
         """
         patterns = []
 
-        # Extract foreign keys
-        foreign_keys = [
-            cond.column
-            for cond in getattr(sql_analysis, "where_conditions", [])
-            if cond.column.is_foreign_key
-        ]
-
-        # === NEW: Association wrapper method CALLS (very common in Rails) ===
-        # Pattern: company.find_all_active, user.get_all_posts, etc.
-        if sql_analysis.primary_model and getattr(sql_analysis, "has_limit", False):
-            # Common association wrapper prefixes
-            wrapper_prefixes = ["find_all_", "get_all_", "find_active_", "get_active_"]
-
-            for prefix in wrapper_prefixes:
-                patterns.append(SearchPattern(
-                    pattern=rf"\.{prefix}\w+\..*\.limit",
-                    distinctiveness=0.75,  # High distinctiveness - these are specific patterns
-                    description=f"Association wrapper call: .{prefix}*...limit",
-                    clause_type="association_wrapper_call"
-                ))
-
-        # Generic association wrapper call with limit (less specific)
+        # Generic method call chain with limit - catches association wrappers
+        # without assuming specific prefixes
         if getattr(sql_analysis, "has_limit", False):
             patterns.append(SearchPattern(
-                pattern=rf"\.\w+\.limit",
-                distinctiveness=0.5,  # Lower distinctiveness - very generic
-                description="Generic method call chain with .limit",
+                pattern=r"\.\w+.*\.limit\(",
+                distinctiveness=0.5,
+                description="Method call chain with .limit",
                 clause_type="method_chain"
             ))
 
-        for fk in foreign_keys:
-            assoc_name = fk.association_name
-
-            # Search for association wrapper method DEFINITIONS
+        # Generic method call chain with offset
+        if getattr(sql_analysis, "has_offset", False):
             patterns.append(SearchPattern(
-                pattern=rf"def\s+find_\w+",
-                distinctiveness=0.7,
-                description=f"Association wrapper method definition (find_*)",
-                clause_type="association_wrapper_def"
+                pattern=r"\.\w+.*\.offset\(",
+                distinctiveness=0.6,
+                description="Method call chain with .offset",
+                clause_type="method_chain"
             ))
 
-            # Search for association usage
-            patterns.append(SearchPattern(
-                pattern=rf"\.{assoc_name}\.",
-                distinctiveness=0.5,
-                description=f"Association usage: .{assoc_name}.",
-                clause_type="association_usage"
-            ))
+        # Search for association declarations (structural pattern)
+        # This finds has_many, belongs_to, has_one, etc. in model files
+        patterns.append(SearchPattern(
+            pattern=r"(has_many|belongs_to|has_one)\s+:",
+            distinctiveness=0.5,
+            description="Association declaration",
+            clause_type="association_declaration"
+        ))
 
         return patterns
 
     def validate_match(self, match: Dict[str, Any], sql_analysis: Any) -> float:
-        """Validate association match."""
-        # Base confidence for association matches
-        return 0.6
+        """Validate association match.
+
+        REQUIRED:
+        - Model name MUST be present in the content
+
+        Note: We use structural validation (presence of method chains, associations)
+        rather than checking for specific foreign key names or association names,
+        because these vary greatly across applications.
+        """
+        content = match.get("content", "").lower()
+
+        # REQUIRE model name to be present - reject if wrong model
+        if sql_analysis.primary_model:
+            model_lower = sql_analysis.primary_model.lower()
+            if model_lower not in content:
+                return 0.0  # REJECT - wrong model or no model reference
+
+        confidence = 0.6  # Base confidence (model name is present)
+
+        # Check for method chain structure matching SQL
+        if getattr(sql_analysis, "has_limit", False):
+            if ".limit(" in content:
+                confidence += 0.2
+
+        if getattr(sql_analysis, "has_offset", False):
+            if ".offset(" in content:
+                confidence += 0.2
+
+        # Bonus for association declarations
+        if any(keyword in content for keyword in ["has_many", "belongs_to", "has_one"]):
+            confidence += 0.1
+
+        return min(1.0, max(0.0, confidence))
 
 
 class OrderByRule(RailsSearchRule):
@@ -495,39 +403,52 @@ class OrderByRule(RailsSearchRule):
         ]
 
     def build_search_patterns(self, sql_analysis: Any) -> List[SearchPattern]:
-        """Build ORDER BY search patterns."""
+        """Build ORDER BY search patterns.
+
+        Note: We use structural patterns (e.g., .order\() instead of literal column names
+        (e.g., .order(created_at)) because column names might be in variables, dynamic sorting,
+        or Arel expressions.
+        """
         patterns = []
 
-        # Extract ORDER BY column
-        order_column = self._extract_order_column(sql_analysis)
-        if order_column:
-            # Search for .order(column: :asc/:desc)
-            patterns.append(SearchPattern(
-                pattern=rf"\.order\([:\'\"]?{order_column}",
-                distinctiveness=0.6,
-                description=f".order({order_column}) method call",
-                clause_type="order"
-            ))
-
-        # Generic .order( pattern
+        # Generic .order( pattern - structural, not column-specific
         patterns.append(SearchPattern(
             pattern=r"\.order\(",
-            distinctiveness=0.4,
-            description=".order() method call (generic)",
+            distinctiveness=0.5,
+            description=".order() method call",
             clause_type="order"
         ))
 
         return patterns
 
     def validate_match(self, match: Dict[str, Any], sql_analysis: Any) -> float:
-        """Validate ORDER BY match."""
+        """Validate ORDER BY match.
+
+        REQUIRED:
+        - Model name MUST be present in the content
+
+        Note: We check for structural patterns (.order( present), not literal column names,
+        because column names might come from variables, dynamic sorting, or Arel expressions.
+        """
         content = match.get("content", "").lower()
 
-        order_column = self._extract_order_column(sql_analysis)
-        if order_column and order_column.lower() in content:
-            return 0.8
+        # REQUIRE model name to be present - reject if wrong model
+        if sql_analysis.primary_model:
+            model_lower = sql_analysis.primary_model.lower()
+            if model_lower not in content:
+                return 0.0  # REJECT - wrong model or no model reference
 
-        return 0.5
+        confidence = 0.6  # Base confidence (model name is present)
+
+        # Check for .order( presence (structural check)
+        if ".order(" in content:
+            confidence += 0.2
+
+            # Bonus if also has .limit( (common pagination pattern)
+            if ".limit(" in content:
+                confidence += 0.1
+
+        return min(1.0, max(0.0, confidence))
 
     def _extract_order_column(self, sql_analysis: Any) -> Optional[str]:
         """Extract ORDER BY column from SQL analysis."""
