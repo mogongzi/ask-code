@@ -63,7 +63,7 @@ def test_transaction_search():
     # Check for errors
     if "error" in result:
         print(f"\n❌ ERROR: {result['error']}")
-        return result
+        assert False, f"Tool returned error: {result['error']}"
 
     # Print summary
     search_type = result.get('search_type', 'unknown')
@@ -82,7 +82,7 @@ def test_transaction_search():
     if not matches:
         print("\n⚠️ No matches found!")
         print("This suggests the transaction analyzer may not be finding the code.")
-        return result
+        assert False, "No matches found"
 
     print(f"\nTop {min(10, len(matches))} matches:")
 
@@ -180,27 +180,15 @@ def test_transaction_search():
         print("Transaction analyzer may not be working correctly.")
     print("=" * 80)
 
-    return result
+    # Assert we found at least one high-confidence match
+    assert high_confidence_count >= 1, f"Expected at least 1 high-confidence match, found {high_confidence_count}"
 
 
 if __name__ == "__main__":
     try:
-        result = test_transaction_search()
-
-        # Exit with success if we found high-confidence matches
-        matches = result.get('matches', [])
-        high_conf_matches = [m for m in matches if float(m.get('confidence', 0)) >= 0.7]
-
-        if len(high_conf_matches) >= 3:
-            print("\n✓ Test passed: Found multiple high-confidence matches")
-            sys.exit(0)
-        elif len(high_conf_matches) >= 1:
-            print("\n⚠ Test partial: Found some matches but could be better")
-            sys.exit(0)
-        else:
-            print("\n✗ Test failed: No high-confidence matches found")
-            sys.exit(1)
-
+        test_transaction_search()
+        print("\n✓ Test passed!")
+        sys.exit(0)
     except Exception as e:
         print(f"\n❌ Test failed with exception: {e}")
         import traceback

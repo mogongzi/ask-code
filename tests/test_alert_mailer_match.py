@@ -121,17 +121,25 @@ def test_alert_mailer_sql_match():
         print("✓ All WHERE conditions matched")
         print("✓ ORDER BY, LIMIT, OFFSET all present")
         print(f"✓ High confidence: {score_result['confidence']:.1%}")
-        return True
+        # Assert perfect match
+        assert match_result.is_complete_match, "Expected complete match"
+        assert score_result['confidence'] >= 0.90, f"Expected confidence >= 0.90, got {score_result['confidence']:.1%}"
     elif match_result.is_complete_match:
         print("✓ COMPLETE MATCH: All WHERE conditions present")
         print(f"  Confidence: {score_result['confidence']:.1%}")
-        return True
+        # Assert complete match
+        assert match_result.is_complete_match, "Expected complete match"
     else:
         print("✗ INCOMPLETE MATCH")
         print(f"  Missing {len(match_result.missing)} conditions")
         print(f"  Confidence: {score_result['confidence']:.1%}")
-        return False
+        # Fail the test if match is incomplete
+        assert False, f"Incomplete match: missing {len(match_result.missing)} conditions"
 
 if __name__ == "__main__":
-    success = test_alert_mailer_sql_match()
-    sys.exit(0 if success else 1)
+    try:
+        test_alert_mailer_sql_match()
+        sys.exit(0)
+    except AssertionError as e:
+        print(f"\n✗ Test failed: {e}")
+        sys.exit(1)

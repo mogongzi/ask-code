@@ -50,7 +50,7 @@ def test_tombstone_search():
     # Check for errors
     if "error" in result:
         print(f"\n❌ ERROR: {result['error']}")
-        return result
+        assert False, f"Tool returned error: {result['error']}"
 
     # Print summary
     print(f"\nSearch type: {result.get('search_type', 'unknown')}")
@@ -137,25 +137,14 @@ def test_tombstone_search():
         print("The fix may not be working as expected.")
     print("=" * 80)
 
-    return result
+    # Assert all expected files found
+    assert all_found, "Some expected files missing or have low confidence"
 
 
 if __name__ == "__main__":
     try:
-        result = test_tombstone_search()
-
-        # Exit with success if all expected matches found
-        matches = result.get('matches', [])
-        found_multi_domain = any('lib/multi_domain.rb' in m.get('file', '') and m.get('line') == 43
-                                  for m in matches)
-        found_company = any('app/models/company.rb' in m.get('file', '') and m.get('line') == 2987
-                           for m in matches)
-
-        if found_multi_domain and found_company:
-            sys.exit(0)
-        else:
-            sys.exit(1)
-
+        test_tombstone_search()
+        sys.exit(0)
     except Exception as e:
         print(f"\n❌ Test failed with exception: {e}")
         import traceback

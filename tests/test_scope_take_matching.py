@@ -40,7 +40,7 @@ def test_custom_domain_tombstone_query():
 
     if not matches:
         print("\n❌ No matches found!")
-        return False
+        assert False, "No matches found"
 
     print(f"\n✅ Found {len(matches)} matches:\n")
 
@@ -97,22 +97,22 @@ def test_custom_domain_tombstone_query():
                     print(f"  ❌ {file_path}: {confidence:.2f} (LOW)")
     else:
         print("\n❌ FAILURE: Some expected matches not found!")
-        return False
 
-    return all_found
+    # Assert all expected files were found
+    assert all_found, f"Some expected matches not found: {[f for f, found in expected_files.items() if not found]}"
 
 
 if __name__ == "__main__":
     print("\n🧪 Running scope + .take matching test...\n")
-    success = test_custom_domain_tombstone_query()
 
-    if success:
+    try:
+        test_custom_domain_tombstone_query()
         print("\n" + "=" * 80)
         print("✅ All tests passed!")
         print("=" * 80)
         sys.exit(0)
-    else:
+    except AssertionError as e:
         print("\n" + "=" * 80)
-        print("❌ Tests failed!")
+        print(f"❌ Tests failed: {e}")
         print("=" * 80)
         sys.exit(1)

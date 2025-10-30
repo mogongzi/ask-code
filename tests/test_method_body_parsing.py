@@ -79,7 +79,8 @@ def test_method_body_parsing():
         if result.missing:
             print(f"   Missing: {result.missing}")
 
-    return result.is_complete_match
+    # Assert complete match
+    assert result.is_complete_match, f"Expected complete match, but {len(result.missing)} conditions missing: {result.missing}"
 
 def test_multiple_custom_methods():
     """Test that method body parsing works for various custom methods."""
@@ -108,8 +109,13 @@ if __name__ == "__main__":
     print("=" * 70)
 
     # Run tests
-    success = test_method_body_parsing()
-    test_multiple_custom_methods()
+    try:
+        test_method_body_parsing()
+        test_multiple_custom_methods()
+        success = True
+    except AssertionError as e:
+        print(f"\n✗ Test failed: {e}")
+        success = False
 
     print_section("Summary")
     print("\n✨ Key Features:")
@@ -118,3 +124,5 @@ if __name__ == "__main__":
     print("   • Works for any custom finder method")
     print("   • Achieves 100% WHERE clause matching")
     print()
+
+    sys.exit(0 if success else 1)
