@@ -799,6 +799,17 @@ class EnhancedSQLRailsSearch(BaseTool):
 
         completeness_score = scoring_result["confidence"]
 
+        # Special case: If query has NO requirements (no WHERE, ORDER, LIMIT, OFFSET)
+        # and everything matches, treat as perfect 1.0 score
+        has_any_requirements = (
+            len(sql_normalized_conditions) > 0 or
+            clause_presence.sql_has_order or
+            clause_presence.sql_has_limit or
+            clause_presence.sql_has_offset
+        )
+        if not has_any_requirements and where_match_result.is_complete_match:
+            completeness_score = 1.0
+
         # 4. Determine confidence label based on score
         if completeness_score >= 0.9:
             confidence = "high"
@@ -812,7 +823,8 @@ class EnhancedSQLRailsSearch(BaseTool):
         # 5. Build missing clauses list
         missing_clauses = []
         if where_match_result.missing:
-            missing_clauses.append(f"WHERE: {len(where_match_result.missing)} conditions")
+            count = len(where_match_result.missing)
+            missing_clauses.append(f"{count} WHERE condition(s)")
         if clause_presence.sql_has_order and not clause_presence.code_has_order:
             missing_clauses.append("ORDER BY")
         if clause_presence.sql_has_limit and not clause_presence.code_has_limit:
