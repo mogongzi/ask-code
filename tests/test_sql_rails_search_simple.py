@@ -68,7 +68,7 @@ def test_sql_rails_search():
     # Check for errors
     if "error" in result:
         print(f"\n❌ ERROR: {result['error']}")
-        return result
+        assert False, f"Tool returned error: {result['error']}"
 
     # Print summary
     print(f"\nSearch type: {result.get('search_type', 'unknown')}")
@@ -131,13 +131,16 @@ def test_sql_rails_search():
         print("\n✗ alert_mailer.rb NOT found in top matches")
         print("  Expected: app/mailers/alert_mailer.rb:180")
         print("  This suggests the search is not finding the correct code")
+        assert False, "alert_mailer.rb not found in top matches"
 
-    return result
+    # Assert we found alert_mailer with high confidence
+    assert alert_mailer_found, "alert_mailer.rb not found in results"
+    assert alert_mailer_confidence >= 0.70, f"alert_mailer.rb confidence too low: {alert_mailer_confidence}"
 
 
 if __name__ == "__main__":
     try:
-        result = test_sql_rails_search()
+        test_sql_rails_search()
         sys.exit(0)
     except Exception as e:
         print(f"\n❌ Test failed with exception: {e}")

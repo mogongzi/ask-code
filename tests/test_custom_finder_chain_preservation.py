@@ -48,20 +48,23 @@ def test_custom_finder_preserves_chain():
     print(f"\nExpected columns: {sorted(expected_columns)}")
     print(f"Actual columns:   {sorted(actual_columns)}")
 
+    missing = expected_columns - actual_columns
+    extra = actual_columns - expected_columns
+
     if expected_columns == actual_columns:
         print("\n✓ SUCCESS: All WHERE conditions extracted correctly!")
         print("✓ Chain preservation working: .offset/.limit/.order preserved during expansion")
-        return True
     else:
-        missing = expected_columns - actual_columns
-        extra = actual_columns - expected_columns
-
         print(f"\n✗ FAILURE: WHERE conditions mismatch")
         if missing:
             print(f"  Missing: {sorted(missing)}")
         if extra:
             print(f"  Extra: {sorted(extra)}")
-        return False
+
+    # Assert all conditions are present
+    assert not missing, f"Missing WHERE conditions: {sorted(missing)}"
+    assert not extra, f"Unexpected WHERE conditions: {sorted(extra)}"
+    assert expected_columns == actual_columns, "WHERE conditions mismatch"
 
 def test_direct_scope_chain():
     """Test that direct scope chains still work"""
@@ -92,14 +95,30 @@ def test_direct_scope_chain():
 
     if expected_columns == actual_columns:
         print("\n✓ SUCCESS: Direct scope chain working correctly!")
-        return True
     else:
         print(f"\n✗ FAILURE: Expected {expected_columns}, got {actual_columns}")
-        return False
+
+    # Assert columns match
+    assert expected_columns == actual_columns, f"Expected {expected_columns}, got {actual_columns}"
 
 if __name__ == "__main__":
-    test1_passed = test_custom_finder_preserves_chain()
-    test2_passed = test_direct_scope_chain()
+    print("\n" + "=" * 80)
+    print("RUNNING TESTS")
+    print("=" * 80)
+
+    try:
+        test_custom_finder_preserves_chain()
+        test1_passed = True
+    except AssertionError as e:
+        print(f"\n✗ Test 1 failed: {e}")
+        test1_passed = False
+
+    try:
+        test_direct_scope_chain()
+        test2_passed = True
+    except AssertionError as e:
+        print(f"\n✗ Test 2 failed: {e}")
+        test2_passed = False
 
     print("\n" + "=" * 80)
     print("SUMMARY")

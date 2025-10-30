@@ -284,14 +284,14 @@ class ModelScopeAnalyzer:
 
         # Pattern 1: .where(column: nil) or .where(:column => nil) → IS NULL
         # Supports both modern (column:) and old (:column =>) syntax
-        nil_pattern = re.compile(r'\.where\((?::)?(\w+)(?::|(?:\s*=>\s*))nil\)')
+        nil_pattern = re.compile(r'\.where\((?::)?(\w+)(?::\s*|(?:\s*=>\s*))nil\)')
         for match in nil_pattern.finditer(scope_def):
             clauses.add(NormalizedClause(column=match.group(1), operator="IS_NULL"))
 
         # Pattern 2: where.not(column: nil) or .where.not(:column => nil) → IS NOT NULL
         # Matches both: where.not(...) and .where.not(...)
         # Supports both modern (column:) and old (:column =>) syntax
-        not_nil_pattern = re.compile(r'(?:where)?\.not\((?::)?(\w+)(?::|(?:\s*=>\s*))nil\)')
+        not_nil_pattern = re.compile(r'(?:where)?\.not\((?::)?(\w+)(?::\s*|(?:\s*=>\s*))nil\)')
         for match in not_nil_pattern.finditer(scope_def):
             clauses.add(NormalizedClause(column=match.group(1), operator="IS_NOT_NULL"))
 
