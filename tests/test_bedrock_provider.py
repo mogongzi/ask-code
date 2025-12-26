@@ -27,7 +27,8 @@ def test_build_payload_formats_system_prompt_with_cache_blocks():
     assert first_block["cache_control"]["type"] == "ephemeral"
     assert "You are an expert Rails Code Detective" in first_block["text"]
     assert second_block["cache_control"]["type"] == "ephemeral"
-    assert second_block["text"].startswith("# Tool Usage (ReAct Pattern)")
+    # Second block contains SQL verification or guidelines content
+    assert "# SQL Match" in second_block["text"] or "# Guidelines" in second_block["text"]
 
 
 def test_build_payload_preserves_existing_block_metadata():

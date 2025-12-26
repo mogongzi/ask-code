@@ -179,21 +179,18 @@ class ReActState:
         return unused
 
     def should_force_different_tool(self, step_threshold: int = 2) -> bool:
-        """Determine if we should force using a different tool."""
-        # Only force different tool if:
-        # 1. The same tool was used multiple times (not just once!)
-        # 2. AND no high-quality results were found
-        if (
-            len(self.tools_used) == 1 and self.current_step > step_threshold + 1
-        ):  # Allow more attempts
-            # Check if we actually found results - don't force if we have good results
-            if not self.has_high_quality_results():
-                return True
+        """
+        Detect exact infinite loops only.
 
-        # Force if we're stuck in a loop (last two attempts were the same)
-        if len(self.search_attempts) >= 2:
-            recent_attempts = self.search_attempts[-2:]
-            if recent_attempts[0] == recent_attempts[1]:
+        Only returns True if the EXACT same action has been repeated
+        multiple times in a row. We trust the LLM to naturally vary
+        its approach - only intervene for true infinite loops.
+        """
+        # Only force if we're stuck in an EXACT loop (same action 3+ times)
+        if len(self.search_attempts) >= 3:
+            recent = self.search_attempts[-3:]
+            if len(set(recent)) == 1:  # All 3 are identical
+                logger.info(f"Exact infinite loop detected: {recent[0]} repeated 3x")
                 return True
 
         return False
@@ -238,14 +235,28 @@ class ReActState:
                         return False
 
                     # For SQL search tools, verify matches are HIGH QUALITY not just partial
-                    if tool_name in ["enhanced_sql_rails_search", "ripgrep"]:
+                    if tool_name in ["enhanced_sql_rails_search", "ripgrep", "sql_rails_search"]:
                         # Check match quality indicators
                         for match in matches:
                             if isinstance(match, dict):
-                                # High confidence match
-                                if match.get("confidence") == "high":
+                                # Get confidence value (can be string like "high", "1.00", or number)
+                                confidence = match.get("confidence")
+
+                                # High confidence string match
+                                if confidence == "high":
                                     logger.debug(f"Found high-confidence match in {tool_name}")
                                     return True
+
+                                # Numeric confidence (string like "1.00" or "0.85" or actual number)
+                                if confidence is not None:
+                                    try:
+                                        conf_value = float(confidence) if isinstance(confidence, str) else confidence
+                                        if conf_value >= 0.8:
+                                            logger.debug(f"Found high-confidence match ({conf_value}) in {tool_name}")
+                                            return True
+                                    except (ValueError, TypeError):
+                                        pass
+
                                 # Exact match context
                                 if match.get("context") == "exact_match":
                                     logger.debug(f"Found exact match in {tool_name}")

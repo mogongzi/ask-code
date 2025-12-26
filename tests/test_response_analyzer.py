@@ -1,305 +1,168 @@
 """
-Tests for agent.response_analyzer.ResponseAnalyzer
-"""
-import pytest
-from unittest.mock import Mock
+Tests for the simplified ResponseAnalyzer.
 
+The analyzer now trusts LLM judgment: if LLM stops calling tools
+and provides substantive text, it's done.
+"""
+
+import pytest
+from unittest.mock import Mock, MagicMock
 from agent.response_analyzer import ResponseAnalyzer, AnalysisResult
 from agent.state_machine import ReActState
 
 
-@pytest.fixture
-def mock_react_state():
-    """Create a properly mocked ReActState."""
-    state = Mock(spec=ReActState)
-    state.current_step = 1
-    state.max_steps = 10
-    state.tools_used = set()
-    state.tool_stats = {}
-    state.search_attempts = []
-    state.findings = []
-    state.finalize_requested = False
-    state.should_stop = False
-    state.stop_reason = None
-    # Add methods that are called by the analyzer
-    state.get_tool_usage_count = Mock(return_value=0)
-    state.get_unused_tools = Mock(return_value=[])
-    state.has_high_quality_results = Mock(return_value=False)
-    return state
-
-
 class TestAnalysisResult:
-    """Test suite for AnalysisResult dataclass."""
+    """Tests for the AnalysisResult dataclass."""
 
     def test_analysis_result_creation(self):
-        """Test AnalysisResult creation."""
+        """Test that AnalysisResult can be created with required fields."""
         result = AnalysisResult(
             is_final=True,
             confidence="high",
-            reason="Found final answer",
+            reason="Test reason",
             suggestions=["suggestion1"],
             has_concrete_results=True
         )
 
         assert result.is_final is True
         assert result.confidence == "high"
-        assert result.reason == "Found final answer"
+        assert result.reason == "Test reason"
         assert result.suggestions == ["suggestion1"]
         assert result.has_concrete_results is True
 
 
 class TestResponseAnalyzer:
-    """Test suite for ResponseAnalyzer."""
+    """Tests for the simplified ResponseAnalyzer class."""
 
     def test_initialization(self):
-        """Test analyzer initialization."""
+        """Test that ResponseAnalyzer initializes correctly."""
         analyzer = ResponseAnalyzer()
         assert analyzer is not None
+        assert analyzer.MIN_SUBSTANTIVE_LENGTH == 200
 
-    def test_analyze_response_with_final_answer_indicator(self, mock_react_state):
-        """Test analysis when response contains final answer indicators."""
+    def test_analyze_response_final_when_no_tools_and_substantive(self):
+        """Test that response is final when LLM stops calling tools and provides substantive text."""
         analyzer = ResponseAnalyzer()
 
-        response = "I found the source code at app/models/user.rb:15 with the authentication logic."
+        # Create a state where LLM has stopped calling tools
+        state = ReActState()
+        state.consecutive_no_tool_calls = 1
 
-        result = analyzer.analyze_response(response, mock_react_state, step=1)
+        # Long response (> 200 chars)
+        response = "I found the source code. " * 20  # ~500 chars
 
-        assert isinstance(result, AnalysisResult)
+        result = analyzer.analyze_response(response, state, step=5)
+
         assert result.is_final is True
         assert result.confidence == "high"
-        assert "final answer indicator" in result.reason.lower()
+        assert "substantive answer" in result.reason.lower()
 
-    def test_analyze_response_with_conclusion_indicator(self):
-        """Test analysis with conclusion indicators."""
+    def test_analyze_response_not_final_when_tool_calls_active(self):
+        """Test that response is not final when LLM is still calling tools."""
         analyzer = ResponseAnalyzer()
+
+        # Create a state where LLM is still using tools
+        state = ReActState()
+        state.consecutive_no_tool_calls = 0
+
+        response = "Let me search for more information about this query."
+
+        result = analyzer.analyze_response(response, state, step=3)
+
+        assert result.is_final is False
+
+    def test_analyze_response_not_final_when_response_too_short(self):
+        """Test that short responses are not considered final."""
+        analyzer = ResponseAnalyzer()
+
+        state = ReActState()
+        state.consecutive_no_tool_calls = 1
+
+        # Short response (< 200 chars)
+        response = "Found it in app/models/user.rb"  # ~30 chars
+
+        result = analyzer.analyze_response(response, state, step=5)
+
+        assert result.is_final is False
+
+    def test_has_high_quality_tool_results_delegates_to_state(self):
+        """Test that has_high_quality_tool_results delegates to ReActState."""
+        analyzer = ResponseAnalyzer()
+
         mock_state = Mock(spec=ReActState)
+        mock_state.has_high_quality_results.return_value = True
 
-        response = "## Final Answer\nThe authentication is handled by Devise gem in the User model."
+        result = analyzer.has_high_quality_tool_results(mock_state)
 
-        result = analyzer.analyze_response(response, mock_state, step=1)
+        assert result is True
+        mock_state.has_high_quality_results.assert_called_once()
 
-        assert result.is_final is True
-        assert result.confidence == "high"
-
-    def test_analyze_response_without_final_indicators(self, mock_react_state):
-        """Test analysis when response doesn't contain final indicators."""
+    def test_should_force_different_tool_exact_loop(self):
+        """Test that should_force_different_tool detects exact infinite loops."""
         analyzer = ResponseAnalyzer()
 
-        response = "Let me search for the authentication logic in the codebase."
-
-        result = analyzer.analyze_response(response, mock_react_state, step=1)
-
-        assert isinstance(result, AnalysisResult)
-        # Result depends on implementation details, but should not be final
-        # without clear indicators
-
-    def test_has_concrete_results_with_file_paths(self):
-        """Test detection of concrete results with file paths."""
-        analyzer = ResponseAnalyzer()
-
-        responses_with_concrete_results = [
-            "Found in app/models/user.rb:15 the authentication method",
-            "The method is defined in app/controllers/sessions_controller.rb",
-            "def authenticate_user is located in the helper"
+        state = ReActState()
+        # Same action repeated 3 times
+        state.search_attempts = [
+            "Step 1: Used ripgrep",
+            "Step 1: Used ripgrep",
+            "Step 1: Used ripgrep",
         ]
 
-        for response in responses_with_concrete_results:
-            has_concrete = analyzer._has_concrete_results(response)
-            assert has_concrete is True, f"Should detect concrete results in: {response[:30]}..."
+        result = analyzer.should_force_different_tool(state, step=5, repetition_limit=3)
 
-    def test_has_concrete_results_without_specifics(self):
-        """Test detection when response lacks concrete results."""
+        assert result is True
+
+    def test_should_force_different_tool_no_loop(self):
+        """Test that varied actions don't trigger force."""
         analyzer = ResponseAnalyzer()
 
-        vague_responses = [
-            "I need to search for more information",
-            "Let me look at the authentication system",
-            "The code might be in the models directory"
+        state = ReActState()
+        state.search_attempts = [
+            "Step 1: Used ripgrep",
+            "Step 2: Used model_analyzer",
+            "Step 3: Used ripgrep",
         ]
 
-        for response in vague_responses:
-            has_concrete = analyzer._has_concrete_results(response)
-            # These responses are vague and shouldn't be considered concrete
+        result = analyzer.should_force_different_tool(state, step=5, repetition_limit=3)
 
-    def test_has_rails_patterns_detection(self):
-        """Test detection of Rails-specific patterns."""
-        analyzer = ResponseAnalyzer()
-
-        rails_responses = [
-            "Found in app/models/user.rb the authentication method",
-            "The controller is in app/controllers/sessions_controller.rb",
-            "Located at app/views/users/show.html.erb",
-            "Check app/config/routes.rb for routing"
-        ]
-
-        for response in rails_responses:
-            has_rails = analyzer._has_rails_patterns(response)
-            assert has_rails is True, f"Should detect Rails patterns in: {response[:30]}..."
-
-    def test_has_activerecord_patterns_detection(self):
-        """Test detection of ActiveRecord-specific patterns."""
-        analyzer = ResponseAnalyzer()
-
-        ar_responses = [
-            "scope :active in the User model",
-            "belongs_to :company relationship",
-            "has_many :posts association",
-            "validates :email presence"
-        ]
-
-        for response in ar_responses:
-            has_ar = analyzer._has_activerecord_patterns(response)
-            assert has_ar is True, f"Should detect ActiveRecord patterns in: {response[:30]}..."
-
-    def test_extract_tool_used_from_response(self):
-        """Test extraction of tool names from responses."""
-        analyzer = ResponseAnalyzer()
-
-        tool_responses = [
-            ("Using ripgrep to search for the pattern", "ripgrep"),
-            ("⚙ Using ast_grep for class definitions", "ast_grep"),
-            ("⚙ Using enhanced_sql_rails_search", "enhanced_sql_rails_search")
-        ]
-
-        for response, expected_tool in tool_responses:
-            extracted_tool = analyzer.extract_tool_used(response)
-            assert extracted_tool == expected_tool, f"Should extract '{expected_tool}' from: {response[:30]}..."
-
-    def test_extract_tool_used_no_tool_mentioned(self):
-        """Test tool extraction when no tool is mentioned."""
-        analyzer = ResponseAnalyzer()
-
-        response = "The authentication system uses standard Rails patterns."
-        extracted_tool = analyzer.extract_tool_used(response)
-
-        assert extracted_tool is None
-
-    def test_should_continue_analysis_various_scenarios(self, mock_react_state):
-        """Test continuation analysis in various scenarios."""
-        analyzer = ResponseAnalyzer()
-        mock_react_state.current_step = 3
-        mock_react_state.max_steps = 10
-
-        # Should continue when response suggests more searching
-        search_response = "Let me search for more authentication methods"
-        should_continue = analyzer._should_continue_analysis(search_response, mock_react_state, None)
-
-        # The actual behavior depends on implementation, but test structure is correct
-        assert isinstance(should_continue, tuple)  # Returns (reason, suggestions)
-
-    def test_has_high_quality_tool_results(self, mock_react_state):
-        """Test assessment of tool result quality."""
-        analyzer = ResponseAnalyzer()
-
-        # Mock state to return True for has_high_quality_results
-        mock_react_state.has_high_quality_results = Mock(return_value=True)
-
-        has_quality = analyzer.has_high_quality_tool_results(mock_react_state)
-
-        # Should delegate to state's has_high_quality_results method
-        assert has_quality is True
-        mock_react_state.has_high_quality_results.assert_called_once()
-
-    def test_has_high_quality_tool_results_empty(self, mock_react_state):
-        """Test tool result assessment with empty results."""
-        analyzer = ResponseAnalyzer()
-
-        # Mock state to return False for has_high_quality_results
-        mock_react_state.has_high_quality_results = Mock(return_value=False)
-
-        has_quality = analyzer.has_high_quality_tool_results(mock_react_state)
-        assert has_quality is False
-        mock_react_state.has_high_quality_results.assert_called_once()
-
-    def test_should_force_different_tool(self, mock_react_state):
-        """Test logic for forcing different tool usage."""
-        analyzer = ResponseAnalyzer()
-
-        # Add tool_stats with high usage
-        mock_react_state.tool_stats = {
-            "ripgrep": Mock(usage_count=4, success_count=0)  # High usage, no success
-        }
-        mock_react_state.should_force_different_tool = Mock(return_value=False)
-
-        should_force = analyzer.should_force_different_tool(mock_react_state, step=5, repetition_limit=3)
-
-        # Should force different tool if usage exceeds limit and no results
-        assert should_force is True
-
-    def test_should_force_different_tool_under_limit(self, mock_react_state):
-        """Test tool forcing when under usage limit."""
-        analyzer = ResponseAnalyzer()
-
-        # Add tool_stats with low usage
-        mock_react_state.tool_stats = {
-            "ripgrep": Mock(usage_count=1, success_count=1)  # Low usage, has success
-        }
-        mock_react_state.should_force_different_tool = Mock(return_value=False)
-
-        should_force = analyzer.should_force_different_tool(mock_react_state, step=2, repetition_limit=3)
-
-        # Should not force different tool if under limit
-        assert should_force is False
+        assert result is False
 
     def test_generate_finalization_prompt(self):
-        """Test generation of finalization prompt."""
+        """Test that finalization prompt is generated."""
         analyzer = ResponseAnalyzer()
 
         prompt = analyzer.generate_finalization_prompt()
 
-        assert isinstance(prompt, str)
-        assert len(prompt) > 0
-        # Should contain guidance about providing final answers
+        assert "final answer" in prompt.lower()
+        assert len(prompt) > 20
 
-    def test_generate_tool_constraint_prompt(self, mock_react_state):
-        """Test generation of tool constraint prompts."""
+    def test_generate_tool_constraint_prompt(self):
+        """Test that constraint prompt is generated for stuck loops."""
         analyzer = ResponseAnalyzer()
 
-        excluded_tools = ["ripgrep", "ast_grep"]
+        state = ReActState()
+        state.tools_used = {"ripgrep"}
 
-        prompt = analyzer.generate_tool_constraint_prompt(mock_react_state, excluded_tools)
+        available_tools = {"ripgrep", "model_analyzer", "file_reader"}
 
-        assert isinstance(prompt, str)
-        assert len(prompt) > 0
-        # Should mention the excluded tools
+        prompt = analyzer.generate_tool_constraint_prompt(state, available_tools)
 
+        assert "repeating" in prompt.lower() or "different" in prompt.lower()
+        assert "model_analyzer" in prompt or "file_reader" in prompt
 
-    def test_final_answer_indicators_case_insensitive(self):
-        """Test that final answer indicators work case-insensitively."""
+    def test_analyze_response_with_planning_tool_param_ignored(self):
+        """Test that planning_tool parameter is accepted but ignored."""
         analyzer = ResponseAnalyzer()
-        mock_state = Mock(spec=ReActState)
 
-        responses = [
-            "I FOUND THE SOURCE CODE AT app/models/user.rb",
-            "## FINAL ANSWER",
-            "## conclusion"
-        ]
+        state = ReActState()
+        state.consecutive_no_tool_calls = 1
 
-        for response in responses:
-            result = analyzer.analyze_response(response, mock_state, step=1)
-            assert result.is_final is True
+        response = "Found the code! " * 20
 
-    def test_analyzer_with_complex_response(self):
-        """Test analyzer with complex, realistic response."""
-        analyzer = ResponseAnalyzer()
-        mock_state = Mock(spec=ReActState)
+        # Should not raise even with planning_tool param
+        result = analyzer.analyze_response(
+            response, state, step=5, planning_tool=Mock()
+        )
 
-        complex_response = """
-        Based on my analysis of the Rails codebase, I found the authentication logic.
-
-        The exact code that generates this SQL is located in app/models/user.rb:25-30:
-
-        def authenticate(password)
-          return false unless password_digest
-          BCrypt::Password.new(password_digest) == password
-        end
-
-        This method is called from the SessionsController during login.
-        """
-
-        result = analyzer.analyze_response(complex_response, mock_state, step=3)
-
-        assert isinstance(result, AnalysisResult)
-        assert result.is_final is True  # Should detect "exact code that generates"
-        assert result.has_concrete_results is True
-        assert "final answer indicator" in result.reason.lower()
+        assert result is not None

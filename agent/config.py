@@ -30,9 +30,8 @@ class AgentConfig:
     max_tokens: Optional[int] = None
     timeout: float = 30.0
 
-    # Response analysis settings
-    finalization_threshold: int = 3  # Steps without tools before forcing finalization
-    tool_repetition_limit: int = 4   # Max times same tool can be used without results
+    # Safety guardrails (only for true infinite loops)
+    max_exact_repeats: int = 3  # Only intervene if exact same action repeated 3+ times
 
     # Debug and logging
     debug_enabled: bool = field(default=False)
@@ -71,11 +70,8 @@ class AgentConfig:
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
 
-        if self.finalization_threshold <= 0:
-            raise ValueError("finalization_threshold must be positive")
-
-        if self.tool_repetition_limit <= 0:
-            raise ValueError("tool_repetition_limit must be positive")
+        if self.max_exact_repeats <= 0:
+            raise ValueError("max_exact_repeats must be positive")
 
         if not self.allowed_tools:
             raise ValueError("allowed_tools cannot be empty")
@@ -112,8 +108,7 @@ class AgentConfig:
             'allowed_tools': self.allowed_tools.copy(),
             'max_tokens': self.max_tokens,
             'timeout': self.timeout,
-            'finalization_threshold': self.finalization_threshold,
-            'tool_repetition_limit': self.tool_repetition_limit,
+            'max_exact_repeats': self.max_exact_repeats,
             'debug_enabled': self.debug_enabled,
             'log_level': self.log_level,
         }
@@ -131,8 +126,7 @@ class AgentConfig:
             'allowed_tools': list(self.allowed_tools),
             'max_tokens': self.max_tokens,
             'timeout': self.timeout,
-            'finalization_threshold': self.finalization_threshold,
-            'tool_repetition_limit': self.tool_repetition_limit,
+            'max_exact_repeats': self.max_exact_repeats,
             'debug_enabled': self.debug_enabled,
             'log_level': self.log_level,
         }

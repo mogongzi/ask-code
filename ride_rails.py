@@ -32,7 +32,6 @@ MAX_TOKEN_SIZE = 20000
 DEFAULT_URL = "http://127.0.0.1:8000/invoke"
 PROMPT_STYLE = "bold green"
 console = Console()
-_ABORT = False
 
 
 def create_streaming_client(
@@ -196,13 +195,13 @@ def repl(
     # Initialize ReAct agent
     try:
         # Create agent configuration
+        # Simplified: trust the LLM to decide when done, only intervene for true infinite loops
         config = AgentConfig(
             project_root=project_root,
-            max_react_steps=25,  # Higher limit for complex SQL tracing workflow (7 steps + margin)
+            max_react_steps=50,  # Safety limit
             debug_enabled=verbose,
             log_level="DEBUG" if verbose else "WARNING",
-            tool_repetition_limit=4,  # Allow some repetition but prevent loops
-            finalization_threshold=7,  # Allow more steps for complex SQL tracing workflow
+            max_exact_repeats=3,  # Only intervene if exact same action repeated 3+ times
         )
 
         react_agent = ReactRailsAgent(config=config, session=session)
@@ -425,14 +424,12 @@ Examples:
     )
     args = parser.parse_args(argv)
 
-    # Setup signal handlers
+    # Setup signal handlers - raise KeyboardInterrupt directly for proper interruption
     def _sigint(_sig, _frm):
-        global _ABORT
-        _ABORT = True
+        raise KeyboardInterrupt
 
     def _sigterm(_sig, _frm):
-        global _ABORT
-        _ABORT = True
+        raise KeyboardInterrupt
 
     def _sigquit(_sig, _frm):
         raise KeyboardInterrupt

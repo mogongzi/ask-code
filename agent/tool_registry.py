@@ -54,6 +54,7 @@ class ToolRegistry:
 
     # Tool synonyms for user-friendly names
     TOOL_SYNONYMS = {
+        # Ripgrep synonyms
         'search_code_semantic': 'ripgrep',
         'search_codebase': 'ripgrep',
         'code_search': 'ripgrep',

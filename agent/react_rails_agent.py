@@ -129,6 +129,18 @@ class ReactRailsAgent:
 
                 return response
 
+        except KeyboardInterrupt:
+            # User interrupted with Ctrl+C or ESC
+            self.console.print("\n[yellow]⚠ Interrupted[/yellow]")
+            duration_ms = (time.time() - self._start_time) * 1000 if self._start_time else 0
+            log_agent_complete(
+                duration_ms,
+                self.state_machine.state.current_step,
+                len(self.state_machine.state.tools_used),
+                False,
+            )
+            return self._generate_interrupted_response()
+
         except Exception as e:
             return self._handle_processing_error(e, user_query)
 
@@ -175,6 +187,12 @@ class ReactRailsAgent:
 
                     # Check for loop detection
                     self._check_for_loops(step_num)
+
+            except KeyboardInterrupt:
+                # User interrupted - stop gracefully
+                self.logger.info(f"User interrupted at step {step_num}")
+                self.state_machine.state.stop_with_reason("User interrupted")
+                break
 
             except Exception as e:
                 self.logger.error(f"Error in ReAct step {step_num}", {"error": str(e)})
@@ -229,16 +247,20 @@ class ReactRailsAgent:
 
         # Record action and observation steps for tool calls
         if llm_response.tool_calls:
-            # Add tool messages to conversation manager
+            # Add tool messages to conversation manager (including assistant's reasoning text)
             tool_messages = self.llm_client.format_tool_messages(
-                llm_response.tool_calls
+                llm_response.tool_calls, llm_response.text
             )
             self.conversation.add_tool_messages(tool_messages)
+
+            # Always sync messages from conversation history
+            self._refresh_messages_from_history(messages)
+
+            # Add context prompt for subsequent steps
             if step_num > 1:
                 context_prompt = self._build_context_prompt()
-                self._append_to_last_user_message(messages, context_prompt)
-            else:
-                self._refresh_messages_from_history(messages)
+                if context_prompt:
+                    self._append_to_last_user_message(messages, context_prompt)
 
             # Process each tool call
             for tool_call in llm_response.tool_calls:
@@ -284,21 +306,8 @@ class ReactRailsAgent:
                 )
                 return True
 
-        # Check for timeout after finalization request
-        if self.state_machine.state.is_stuck_after_finalization(
-            max_steps_after_finalization=5  # Allow more steps for complex workflows like SQL tracing
-        ):
-            self.logger.warning(f"Finalization timeout at step {step_num}")
-            # Use the last meaningful response as answer
-            if llm_response.text and llm_response.text.strip():
-                self.state_machine.record_answer(llm_response.text)
-                self.logger.log_react_step("answer", step_num, llm_response.text)
-                return True
-            else:
-                self.state_machine.state.stop_with_reason("Finalization timeout")
-                return True
-
         # Analyze response to determine if we should stop
+        # Simple: if LLM stopped calling tools and provided substantive text, it's done
         analysis = self.response_analyzer.analyze_response(
             llm_response.text, self.state_machine.state, step_num
         )
@@ -308,21 +317,9 @@ class ReactRailsAgent:
             self.logger.log_react_step("answer", step_num, llm_response.text)
             return True
 
-        # Check if we should request finalization
-        if (
-            llm_response.tool_calls
-            and self.response_analyzer.has_high_quality_tool_results(
-                self.state_machine.state
-            )
-            and not self.state_machine.state.finalize_requested
-        ):
-            finalization_prompt = self.response_analyzer.generate_finalization_prompt()
-            self._append_to_last_user_message(messages, finalization_prompt)
-            self.state_machine.state.request_finalization()
-
-        # Check if we should force different tool usage
-        elif self.response_analyzer.should_force_different_tool(
-            self.state_machine.state, step_num, self.config.tool_repetition_limit
+        # Check if we should force different tool usage (only for exact infinite loops)
+        if self.response_analyzer.should_force_different_tool(
+            self.state_machine.state, step_num, self.config.max_exact_repeats
         ):
             available_tools = set(self.tool_registry.get_tool_names())
             constraint_prompt = self.response_analyzer.generate_tool_constraint_prompt(
@@ -370,32 +367,20 @@ class ReactRailsAgent:
         return self.state_machine.get_context_prompt(available_tools)
 
     def _check_for_loops(self, step_num: int) -> None:
-        """Check for and handle infinite loops in the ReAct process."""
-        # Check for tool repetition without results
-        if self.state_machine.state.should_force_different_tool(step_threshold=2):
+        """
+        Check for true infinite loops only.
+
+        We trust the LLM to vary its approach - only intervene if
+        the EXACT same action is repeated 3+ times.
+        """
+        if self.state_machine.state.should_force_different_tool():
             self.logger.warning(
-                f"Potential loop detected at step {step_num}: repeated tool usage"
-            )
-
-            # If we've used significant steps without progress, stop
-            if step_num > self.config.max_react_steps // 2:
-                raise ReActLoopError(
-                    step_num,
-                    "Repeated tool usage without progress",
-                    {"tools_used": list(self.state_machine.state.tools_used)},
-                )
-
-        # Check for stuck state (no tool calls repeatedly)
-        if self.state_machine.state.is_stuck_without_tools(max_consecutive_no_tools=3):
-            self.logger.error(
-                f"Loop detected at step {step_num}: agent stuck without tool calls"
+                f"Exact infinite loop detected at step {step_num}"
             )
             raise ReActLoopError(
                 step_num,
-                "Agent not making tool calls for multiple consecutive steps",
-                {
-                    "consecutive_no_tool_calls": self.state_machine.state.consecutive_no_tool_calls
-                },
+                "Exact same action repeated 3+ times",
+                {"tools_used": list(self.state_machine.state.tools_used)},
             )
 
     def _generate_final_response(self) -> str:
@@ -479,6 +464,34 @@ class ReactRailsAgent:
                     else step.content
                 )
                 summary_parts.append(f"**Result:** {content}")
+
+        return "\n\n".join(summary_parts)
+
+    def _generate_interrupted_response(self) -> str:
+        """Generate a response when user interrupts the analysis."""
+        steps_completed = self.state_machine.state.current_step
+        tools_used = len(self.state_machine.state.tools_used)
+
+        if steps_completed == 0:
+            return "Analysis interrupted before starting."
+
+        # Show what we found so far
+        summary_parts = [
+            f"## Analysis Interrupted\n",
+            f"Completed **{steps_completed}** step(s) using **{tools_used}** tool(s) before interruption.\n",
+        ]
+
+        # Include any observations we collected
+        observations = [
+            step for step in self.state_machine.state.steps
+            if step.step_type == StepType.OBSERVATION
+        ]
+
+        if observations:
+            summary_parts.append("### Partial Results:")
+            for obs in observations[-3:]:  # Last 3 observations
+                content = obs.content[:300] + "..." if len(obs.content) > 300 else obs.content
+                summary_parts.append(f"- {content}")
 
         return "\n\n".join(summary_parts)
 

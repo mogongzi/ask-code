@@ -320,12 +320,15 @@ Input: {"pattern": "SELECT|WHERE|FROM", "file_types": ["rb", "erb"]}
             error=error_message,
         )
 
-    def format_tool_messages(self, tool_calls_made: List[dict]) -> List[dict]:
+    def format_tool_messages(
+        self, tool_calls_made: List[dict], assistant_text: str = None
+    ) -> List[dict]:
         """
         Format tool calls and results into Anthropic tool_use/tool_result messages.
 
         Args:
             tool_calls_made: List of ToolCall objects
+            assistant_text: Optional text content from the assistant's response
 
         Returns:
             List of formatted messages for conversation context
@@ -333,11 +336,17 @@ Input: {"pattern": "SELECT|WHERE|FROM", "file_types": ["rb", "erb"]}
         if not tool_calls_made:
             return []
 
-        # Create tool_use blocks
-        tool_use_blocks = []
+        # Create assistant content blocks (text + tool_use)
+        assistant_content = []
+
+        # Include assistant's reasoning text if present
+        if assistant_text and assistant_text.strip():
+            assistant_content.append({"type": "text", "text": assistant_text.strip()})
+
+        # Add tool_use blocks
         for tool_call in tool_calls_made:
             # tool_call is a ToolCall object
-            tool_use_blocks.append(
+            assistant_content.append(
                 {
                     "type": "tool_use",
                     "id": tool_call.id,
@@ -363,7 +372,7 @@ Input: {"pattern": "SELECT|WHERE|FROM", "file_types": ["rb", "erb"]}
             tool_result_blocks.append(tool_result_block)
 
         return [
-            {"role": "assistant", "content": tool_use_blocks},
+            {"role": "assistant", "content": assistant_content},
             {"role": "user", "content": tool_result_blocks},
         ]
 

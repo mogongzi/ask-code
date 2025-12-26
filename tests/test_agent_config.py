@@ -1,5 +1,5 @@
 """
-Tests for agent.config.AgentConfig
+Tests for agent.config.AgentConfig (simplified version)
 """
 import os
 import pytest
@@ -20,8 +20,7 @@ class TestAgentConfig:
         assert config.debug_enabled is False
         assert config.log_level == "INFO"
         assert config.timeout == 30.0
-        assert config.finalization_threshold == 3
-        assert config.tool_repetition_limit == 4
+        assert config.max_exact_repeats == 3  # Simplified: only for exact loops
         assert len(config.allowed_tools) > 0
 
     def test_custom_configuration(self):
@@ -32,8 +31,7 @@ class TestAgentConfig:
             debug_enabled=True,
             log_level="DEBUG",
             timeout=60.0,
-            finalization_threshold=3,
-            tool_repetition_limit=5
+            max_exact_repeats=5
         )
 
         assert config.max_react_steps == 15
@@ -41,8 +39,7 @@ class TestAgentConfig:
         assert config.debug_enabled is True
         assert config.log_level == "DEBUG"
         assert config.timeout == 60.0
-        assert config.finalization_threshold == 3
-        assert config.tool_repetition_limit == 5
+        assert config.max_exact_repeats == 5
 
     def test_environment_variable_loading(self):
         """Test loading configuration from environment variables."""
@@ -83,11 +80,8 @@ class TestAgentConfig:
         with pytest.raises(ValueError, match="timeout must be positive"):
             AgentConfig(timeout=0)
 
-        with pytest.raises(ValueError, match="finalization_threshold must be positive"):
-            AgentConfig(finalization_threshold=0)
-
-        with pytest.raises(ValueError, match="tool_repetition_limit must be positive"):
-            AgentConfig(tool_repetition_limit=0)
+        with pytest.raises(ValueError, match="max_exact_repeats must be positive"):
+            AgentConfig(max_exact_repeats=0)
 
     def test_validation_empty_allowed_tools(self):
         """Test validation of empty allowed tools."""
