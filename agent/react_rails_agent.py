@@ -209,7 +209,7 @@ class ReactRailsAgent:
         final_response = self._generate_final_response()
 
         # Display reasoning trail if enabled
-        if self.config.show_reasoning:
+        if self.config.llm_tracking:
             cycles = self.state_machine.state.get_complete_reasoning_trail()
             if cycles:
                 format_complete_reasoning_section(cycles, self.console)

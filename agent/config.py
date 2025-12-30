@@ -31,7 +31,7 @@ class AgentConfig:
     log_level: str = "INFO"
 
     # Display options
-    show_reasoning: bool = False  # Show LLM reasoning trail after final answer
+    llm_tracking: bool = False  # Show LLM reasoning trail after final answer
 
     def __post_init__(self):
         """Post-initialization validation and environment variable loading."""
@@ -58,10 +58,10 @@ class AgentConfig:
             except ValueError:
                 pass  # Keep default value
 
-        # Show reasoning setting
-        show_reasoning = os.getenv('AGENT_SHOW_REASONING', '').lower()
-        if show_reasoning in ('1', 'true', 'yes'):
-            self.show_reasoning = True
+        # LLM tracking setting
+        llm_tracking = os.getenv('AGENT_LLM_TRACKING', '').lower()
+        if llm_tracking in ('1', 'true', 'yes'):
+            self.llm_tracking = True
 
     def _validate_config(self) -> None:
         """Validate configuration values."""
@@ -108,7 +108,7 @@ class AgentConfig:
             'max_exact_repeats': self.max_exact_repeats,
             'debug_enabled': self.debug_enabled,
             'log_level': self.log_level,
-            'show_reasoning': self.show_reasoning,
+            'llm_tracking': self.llm_tracking,
         }
 
         # Update with provided values
@@ -126,5 +126,5 @@ class AgentConfig:
             'max_exact_repeats': self.max_exact_repeats,
             'debug_enabled': self.debug_enabled,
             'log_level': self.log_level,
-            'show_reasoning': self.show_reasoning,
+            'llm_tracking': self.llm_tracking,
         }

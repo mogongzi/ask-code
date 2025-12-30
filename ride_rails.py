@@ -121,8 +121,8 @@ def get_agent_input(
         # Handle reasoning toggle
         if user_input.strip().lower() == "/reasoning":
             if react_agent:
-                new_value = not react_agent.config.show_reasoning
-                react_agent.config = react_agent.config.update(show_reasoning=new_value)
+                new_value = not react_agent.config.llm_tracking
+                react_agent.config = react_agent.config.update(llm_tracking=new_value)
                 status = "enabled" if new_value else "disabled"
                 console.print(f"[yellow]Reasoning display {status}[/yellow]")
             else:
@@ -143,7 +143,7 @@ def repl(
     project_root: str,
     verbose: bool = False,
     use_streaming: bool = False,
-    show_reasoning: bool = False,
+    llm_tracking: bool = False,
 ) -> int:
     """
     Enhanced interactive Rails code analysis loop with ReAct agent.
@@ -154,7 +154,7 @@ def repl(
         project_root: Rails project root directory
         verbose: Enable verbose mode with detailed logging
         use_streaming: Use streaming API (SSE) vs non-streaming (single request)
-        show_reasoning: Show LLM reasoning trail after final answer
+        llm_tracking: Show LLM reasoning trail after final answer
 
     Returns:
         Exit code (0 for success)
@@ -215,7 +215,7 @@ def repl(
             debug_enabled=verbose,
             log_level="DEBUG" if verbose else "WARNING",
             max_exact_repeats=3,  # Only intervene if exact same action repeated 3+ times
-            show_reasoning=show_reasoning,
+            llm_tracking=llm_tracking,
         )
 
         react_agent = ReactRailsAgent(config=config, session=session)
@@ -438,7 +438,7 @@ Examples:
         help="Use streaming API (SSE) instead of blocking (default: blocking)",
     )
     parser.add_argument(
-        "--show-reasoning",
+        "--llm-tracking",
         action="store_true",
         help="Show LLM reasoning trail after the final answer",
     )
@@ -477,7 +477,7 @@ Examples:
             project_root=args.project,
             verbose=args.verbose,
             use_streaming=args.streaming,
-            show_reasoning=args.show_reasoning,
+            llm_tracking=args.llm_tracking,
         )
         return code
     except Exception as e:
