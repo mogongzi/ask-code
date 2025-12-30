@@ -253,3 +253,166 @@ class TestReActStateMachine:
 
         assert state_machine.state.should_stop is True
         assert state_machine.state.stop_reason == "Max steps reached"
+
+
+class TestGetReasoningTrail:
+    """Test suite for get_reasoning_trail() method."""
+
+    def test_get_reasoning_trail_with_thought_steps(self):
+        """Test extracting reasoning from THOUGHT steps."""
+        state = ReActState()
+
+        # Add various steps
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="First thought"))
+        state.add_step(ReActStep(step_type=StepType.ACTION, content="Action", tool_name="ripgrep"))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="Result"))
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Second thought"))
+        state.add_step(ReActStep(step_type=StepType.ANSWER, content="Final answer"))
+
+        reasoning = state.get_reasoning_trail()
+
+        assert len(reasoning) == 2
+        assert reasoning[0] == "First thought"
+        assert reasoning[1] == "Second thought"
+
+    def test_get_reasoning_trail_empty(self):
+        """Test reasoning trail with no THOUGHT steps."""
+        state = ReActState()
+        state.add_step(ReActStep(step_type=StepType.ACTION, content="Action", tool_name="ripgrep"))
+
+        reasoning = state.get_reasoning_trail()
+        assert reasoning == []
+
+    def test_get_reasoning_trail_no_steps(self):
+        """Test reasoning trail with no steps at all."""
+        state = ReActState()
+
+        reasoning = state.get_reasoning_trail()
+        assert reasoning == []
+
+    def test_get_reasoning_trail_filters_empty_content(self):
+        """Test that empty thought content is filtered out."""
+        state = ReActState()
+
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Valid thought"))
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content=""))
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="   "))
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Another valid thought"))
+
+        reasoning = state.get_reasoning_trail()
+
+        assert len(reasoning) == 2
+        assert reasoning[0] == "Valid thought"
+        assert reasoning[1] == "Another valid thought"
+
+    def test_get_reasoning_trail_preserves_order(self):
+        """Test that reasoning steps are in chronological order."""
+        state = ReActState()
+
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="First"))
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Second"))
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Third"))
+
+        reasoning = state.get_reasoning_trail()
+
+        assert reasoning == ["First", "Second", "Third"]
+
+
+class TestGetCompleteReasoningTrail:
+    """Test suite for get_complete_reasoning_trail() method."""
+
+    def test_complete_cycle(self):
+        """Test extracting complete THOUGHT → ACTION → OBSERVATION cycles."""
+        state = ReActState()
+
+        # Add a complete cycle
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Let me search"))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION,
+            content="Used ripgrep",
+            tool_name="ripgrep",
+            tool_input={"pattern": "test"}
+        ))
+        state.add_step(ReActStep(
+            step_type=StepType.OBSERVATION,
+            content="Found 5 matches"
+        ))
+
+        cycles = state.get_complete_reasoning_trail()
+
+        assert len(cycles) == 1
+        assert cycles[0]["thought"] == "Let me search"
+        assert cycles[0]["tool_name"] == "ripgrep"
+        assert cycles[0]["tool_input"] == {"pattern": "test"}
+        assert cycles[0]["tool_output"] == "Found 5 matches"
+
+    def test_multiple_cycles(self):
+        """Test extracting multiple complete cycles."""
+        state = ReActState()
+
+        # First cycle
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="First thought"))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION,
+            content="Used tool1",
+            tool_name="tool1",
+            tool_input={"arg": "value1"}
+        ))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="Result 1"))
+
+        # Second cycle
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Second thought"))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION,
+            content="Used tool2",
+            tool_name="tool2",
+            tool_input={"arg": "value2"}
+        ))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="Result 2"))
+
+        cycles = state.get_complete_reasoning_trail()
+
+        assert len(cycles) == 2
+        assert cycles[0]["thought"] == "First thought"
+        assert cycles[0]["tool_name"] == "tool1"
+        assert cycles[1]["thought"] == "Second thought"
+        assert cycles[1]["tool_name"] == "tool2"
+
+    def test_thought_only_cycle(self):
+        """Test that thoughts without actions are included."""
+        state = ReActState()
+
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Just a thought"))
+
+        cycles = state.get_complete_reasoning_trail()
+
+        assert len(cycles) == 1
+        assert cycles[0]["thought"] == "Just a thought"
+        assert "tool_name" not in cycles[0]
+
+    def test_empty_state(self):
+        """Test empty state returns empty list."""
+        state = ReActState()
+
+        cycles = state.get_complete_reasoning_trail()
+
+        assert cycles == []
+
+    def test_thought_with_action_no_observation(self):
+        """Test thought with action but no observation."""
+        state = ReActState()
+
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="My thought"))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION,
+            content="Used tool",
+            tool_name="ripgrep",
+            tool_input={"pattern": "foo"}
+        ))
+
+        cycles = state.get_complete_reasoning_trail()
+
+        assert len(cycles) == 1
+        assert cycles[0]["thought"] == "My thought"
+        assert cycles[0]["tool_name"] == "ripgrep"
+        assert "tool_output" not in cycles[0]

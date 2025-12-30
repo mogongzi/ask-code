@@ -37,6 +37,9 @@ class AgentConfig:
     debug_enabled: bool = field(default=False)
     log_level: str = "INFO"
 
+    # Display options
+    show_reasoning: bool = False  # Show LLM reasoning trail after final answer
+
     def __post_init__(self):
         """Post-initialization validation and environment variable loading."""
         self._load_from_environment()
@@ -61,6 +64,11 @@ class AgentConfig:
                 self.timeout = float(timeout)
             except ValueError:
                 pass  # Keep default value
+
+        # Show reasoning setting
+        show_reasoning = os.getenv('AGENT_SHOW_REASONING', '').lower()
+        if show_reasoning in ('1', 'true', 'yes'):
+            self.show_reasoning = True
 
     def _validate_config(self) -> None:
         """Validate configuration values."""
@@ -111,6 +119,7 @@ class AgentConfig:
             'max_exact_repeats': self.max_exact_repeats,
             'debug_enabled': self.debug_enabled,
             'log_level': self.log_level,
+            'show_reasoning': self.show_reasoning,
         }
 
         # Update with provided values
@@ -129,4 +138,5 @@ class AgentConfig:
             'max_exact_repeats': self.max_exact_repeats,
             'debug_enabled': self.debug_enabled,
             'log_level': self.log_level,
+            'show_reasoning': self.show_reasoning,
         }

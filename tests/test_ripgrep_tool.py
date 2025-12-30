@@ -301,6 +301,65 @@ lib/helpers/auth.rb:15:  def authenticate_user"""
         assert matches[0]["file"] == "file1.rb"
         assert matches[4]["file"] == "file5.rb"
 
+    def test_parse_ripgrep_output_max_results_with_context_lines(self, temp_project_root):
+        """Test that max_results counts actual matches, not raw lines including context.
+
+        When using -C (context) mode, ripgrep outputs:
+        - Match lines with ':' separator (e.g., file.rb:10:match content)
+        - Context lines with '-' separator (e.g., file.rb-9-context before)
+        - Group separators ('--')
+
+        max_results should limit actual matches, not total raw lines.
+        """
+        tool = RipgrepTool(temp_project_root)
+
+        # Simulate ripgrep output with -C 2 context (2 lines before/after each match)
+        # This is what real ripgrep outputs: match lines use ':', context lines use '-'
+        output = """file1.rb-1-# Comment before
+file1.rb-2-class User
+file1.rb:3:  validates :email, presence: true
+file1.rb-4-  validates :name
+file1.rb-5-end
+--
+file2.rb-8-# Another comment
+file2.rb-9-def create
+file2.rb:10:  @user = User.new(params)
+file2.rb-11-  @user.save
+file2.rb-12-end
+--
+file3.rb-18-module Auth
+file3.rb-19-  def authenticate
+file3.rb:20:    user = User.find_by(email: email)
+file3.rb-21-    return nil unless user
+file3.rb-22-  end
+--
+file4.rb-30-# More code
+file4.rb-31-def update
+file4.rb:32:  @user.update(user_params)
+file4.rb-33-  redirect_to @user
+file4.rb-34-end
+--
+file5.rb-40-class Admin
+file5.rb-41-  belongs_to :user
+file5.rb:42:  validates :user_id
+file5.rb-43-end
+file5.rb-44-# end of file"""
+
+        # With max_results=3, should get exactly 3 matches even though
+        # there are many more raw lines (including context)
+        matches = tool._parse_ripgrep_output(output, max_results=3)
+
+        assert len(matches) == 3
+        assert matches[0]["file"] == "file1.rb"
+        assert matches[0]["line"] == 3
+        assert "validates :email" in matches[0]["content"]
+
+        assert matches[1]["file"] == "file2.rb"
+        assert matches[1]["line"] == 10
+
+        assert matches[2]["file"] == "file3.rb"
+        assert matches[2]["line"] == 20
+
     def test_parse_ripgrep_output_invalid_lines(self, temp_project_root):
         """Test parsing with invalid lines in output."""
         tool = RipgrepTool(temp_project_root)

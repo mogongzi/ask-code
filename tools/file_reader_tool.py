@@ -17,6 +17,8 @@ class FileReaderTool(BaseTool):
 
     # Maximum lines to read at once to prevent token overflow
     MAX_LINES = 500
+    # Auto-load full file if under this many lines (reduces round trips)
+    AUTO_LOAD_THRESHOLD = 300
 
     @property
     def name(self) -> str:
@@ -27,7 +29,9 @@ class FileReaderTool(BaseTool):
         return (
             "Read source files from the Rails project. "
             "Use this after search tools to examine specific files or code sections. "
-            "Can read entire files or specific line ranges."
+            "For files under 300 lines, omit line_start/line_end to read the entire file - "
+            "this gives complete context including callbacks, concerns, and related methods. "
+            "For larger files, use line ranges to focus on specific sections."
         )
 
     @property
@@ -62,46 +66,30 @@ class FileReaderTool(BaseTool):
 
         Returns:
             File contents with line numbers or error message
-        """
-        self._debug_input(input_params)
 
+        Note: _debug_input/_debug_output are handled by execute_with_debug() wrapper
+        """
         if not self.validate_input(input_params):
-            error_result = {"error": "Invalid input parameters"}
-            self._debug_output(error_result)
-            return error_result
+            return {"error": "Invalid input parameters"}
 
         if not self.project_root or not Path(self.project_root).exists():
-            error_result = {"error": "Project root not found"}
-            self._debug_output(error_result)
-            return error_result
+            return {"error": "Project root not found"}
 
         file_path = input_params.get("file_path", "")
         line_start = input_params.get("line_start")
         line_end = input_params.get("line_end")
 
-        self._debug_log("📖 Reading file", {
-            "file_path": file_path,
-            "line_start": line_start,
-            "line_end": line_end
-        })
-
         # Resolve and validate file path
         try:
             full_path = self._resolve_file_path(file_path)
         except ValueError as e:
-            error_result = {"error": str(e)}
-            self._debug_output(error_result)
-            return error_result
+            return {"error": str(e)}
 
         # Read file contents
         try:
-            result = self._read_file_content(full_path, line_start, line_end)
-            self._debug_output(result)
-            return result
+            return self._read_file_content(full_path, line_start, line_end)
         except Exception as e:
-            error_result = {"error": f"Error reading file: {e}"}
-            self._debug_output(error_result)
-            return error_result
+            return {"error": f"Error reading file: {e}"}
 
     def _resolve_file_path(self, file_path: str) -> Path:
         """
@@ -179,7 +167,10 @@ class FileReaderTool(BaseTool):
         else:
             start_idx = max(0, line_start - 1)  # Convert to 0-indexed
 
-        if line_end is None:
+        # Auto-load full file for small files when no range specified
+        if line_start is None and line_end is None and total_lines <= self.AUTO_LOAD_THRESHOLD:
+            end_idx = total_lines
+        elif line_end is None:
             end_idx = min(total_lines, start_idx + self.MAX_LINES)
         else:
             end_idx = min(total_lines, line_end)  # Already 0-indexed for slicing

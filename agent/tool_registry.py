@@ -12,14 +12,9 @@ from dataclasses import dataclass
 
 from tools.base_tool import BaseTool
 from tools.ripgrep_tool import RipgrepTool
-from tools.sql_rails_search import SQLRailsSearch
 from tools.ast_grep_tool import AstGrepTool
-from tools.model_analyzer import ModelAnalyzer
-from tools.controller_analyzer import ControllerAnalyzer
-from tools.route_analyzer import RouteAnalyzer
-from tools.migration_analyzer import MigrationAnalyzer
 from tools.file_reader_tool import FileReaderTool
-
+from tools.directory_tool import DirectoryTool
 
 logger = logging.getLogger(__name__)
 
@@ -40,36 +35,25 @@ class ToolRegistry:
     schema generation, and graceful error handling.
     """
 
-    # Core tool definitions with their classes
     CORE_TOOLS = {
         'ripgrep': RipgrepTool,
-        'sql_rails_search': SQLRailsSearch,  # Unified SQL search with intelligent routing
-        'ast_grep': AstGrepTool,
-        'model_analyzer': ModelAnalyzer,
-        'controller_analyzer': ControllerAnalyzer,
-        'route_analyzer': RouteAnalyzer,
-        'migration_analyzer': MigrationAnalyzer,
         'file_reader': FileReaderTool,
+        'list_directory': DirectoryTool,
+        'ast_grep': AstGrepTool,
     }
 
-    # Tool synonyms for user-friendly names
     TOOL_SYNONYMS = {
-        # Ripgrep synonyms
         'search_code_semantic': 'ripgrep',
         'search_codebase': 'ripgrep',
         'code_search': 'ripgrep',
         'grep': 'ripgrep',
-        # SQL search tool synonyms
-        'sql_search': 'sql_rails_search',
-        'trace_sql': 'sql_rails_search',
-        'find_sql_source': 'sql_rails_search',
-        'find_sql': 'sql_rails_search',
-        'sql_to_rails': 'sql_rails_search',
-        # Other tool synonyms
-        'astgrep': 'ast_grep',
+        'search': 'ripgrep',
         'read_file': 'file_reader',
         'show_file': 'file_reader',
         'cat': 'file_reader',
+        'ls': 'list_directory',
+        'dir': 'list_directory',
+        'astgrep': 'ast_grep',
     }
 
     def __init__(self, project_root: Optional[str] = None, debug: bool = False):

@@ -222,3 +222,68 @@ class TestFileReaderTool:
         content = result["content"]
         assert "1 |" in content or "    1 |" in content  # Line number format
         assert "2 |" in content or "    2 |" in content
+
+    def test_auto_load_small_file(self, temp_project):
+        """Test that small files are auto-loaded entirely without truncation."""
+        # Create a file under AUTO_LOAD_THRESHOLD (300 lines)
+        small_file = temp_project / "small.rb"
+        lines = [f"# Line {i}\n" for i in range(200)]
+        small_file.write_text("".join(lines))
+
+        tool = FileReaderTool(str(temp_project))
+        result = tool.execute({"file_path": "small.rb"})
+
+        # Should load entire file without truncation
+        assert result["truncated"] is False
+        assert result["total_lines"] == 200
+        assert result["lines_shown"] == 200
+        assert result["line_range"] == [1, 200]
+
+    def test_auto_load_threshold_boundary(self, temp_project):
+        """Test auto-load at exactly AUTO_LOAD_THRESHOLD lines."""
+        # Create file at exactly 300 lines (the threshold)
+        boundary_file = temp_project / "boundary.rb"
+        lines = [f"# Line {i}\n" for i in range(300)]
+        boundary_file.write_text("".join(lines))
+
+        tool = FileReaderTool(str(temp_project))
+        result = tool.execute({"file_path": "boundary.rb"})
+
+        # Should load entire file (threshold is inclusive)
+        assert result["truncated"] is False
+        assert result["lines_shown"] == 300
+
+    def test_no_auto_load_over_threshold(self, temp_project):
+        """Test files over AUTO_LOAD_THRESHOLD use MAX_LINES limit."""
+        # Create file just over AUTO_LOAD_THRESHOLD but under MAX_LINES
+        # This verifies the threshold check works (not auto-loaded)
+        medium_file = temp_project / "medium.rb"
+        lines = [f"# Line {i}\n" for i in range(350)]
+        medium_file.write_text("".join(lines))
+
+        tool = FileReaderTool(str(temp_project))
+        result = tool.execute({"file_path": "medium.rb"})
+
+        # File is 350 lines, over threshold (300) but under MAX_LINES (500)
+        # So it reads all 350 lines via MAX_LINES path, not auto-load
+        assert result["total_lines"] == 350
+        assert result["lines_shown"] == 350  # All lines since < MAX_LINES
+        assert result["truncated"] is False  # Not truncated since < MAX_LINES
+
+    def test_auto_load_disabled_with_line_range(self, temp_project):
+        """Test that auto-load doesn't apply when line range is specified."""
+        # Create a small file
+        small_file = temp_project / "small_range.rb"
+        lines = [f"# Line {i}\n" for i in range(100)]
+        small_file.write_text("".join(lines))
+
+        tool = FileReaderTool(str(temp_project))
+        # Specify a line range - should only read that range
+        result = tool.execute({
+            "file_path": "small_range.rb",
+            "line_start": 10,
+            "line_end": 20
+        })
+
+        assert result["lines_shown"] == 11  # Lines 10-20 inclusive
+        assert result["line_range"] == [10, 20]

@@ -65,24 +65,19 @@ class RipgrepTool(BaseTool):
         Returns:
             Search results with file paths, line numbers, and content
         """
-        self._debug_input(input_params)
+        # Note: _debug_input/_debug_output are handled by execute_with_debug() wrapper
+        # Only use _debug_log() for intermediate steps here
 
         # Check for specific validation errors to provide better messages
         pattern = input_params.get("pattern", "")
         if not pattern:
-            error_result = {"error": "Pattern is required"}
-            self._debug_output(error_result)
-            return error_result
+            return {"error": "Pattern is required"}
 
         if not self.validate_input(input_params):
-            error_result = {"error": "Invalid input parameters"}
-            self._debug_output(error_result)
-            return error_result
+            return {"error": "Invalid input parameters"}
 
         if not self.project_root or not Path(self.project_root).exists():
-            error_result = {"error": "Project root not found"}
-            self._debug_output(error_result)
-            return error_result
+            return {"error": "Project root not found"}
 
         file_types = input_params.get("file_types", ["rb"])
         context = input_params.get("context", 2)
@@ -144,18 +139,14 @@ class RipgrepTool(BaseTool):
 
             if result.returncode != 0:
                 if result.returncode == 1:  # No matches found
-                    no_matches_result = {"matches": [], "total": 0, "message": "No matches found"}
-                    self._debug_output(no_matches_result)
-                    return no_matches_result
+                    return {"matches": [], "total": 0, "message": "No matches found"}
                 else:
-                    error_result = {"error": f"Ripgrep error: {result.stderr}"}
-                    self._debug_output(error_result)
-                    return error_result
+                    return {"error": f"Ripgrep error: {result.stderr}"}
 
             # Parse results
             matches = self._parse_ripgrep_output(result.stdout, max_results)
 
-            final_result = {
+            return {
                 "matches": matches,
                 "total": len(matches),
                 "pattern": pattern,
@@ -163,17 +154,10 @@ class RipgrepTool(BaseTool):
                 "case_insensitive": case_insensitive
             }
 
-            self._debug_output(final_result)
-            return final_result
-
         except subprocess.TimeoutExpired:
-            timeout_result = {"error": "Search timed out"}
-            self._debug_output(timeout_result)
-            return timeout_result
+            return {"error": "Search timed out"}
         except Exception as e:
-            error_result = {"error": f"Error executing ripgrep: {e}"}
-            self._debug_output(error_result)
-            return error_result
+            return {"error": f"Error executing ripgrep: {e}"}
 
     def create_compact_output(self, full_result: Dict[str, Any]) -> Dict[str, Any]:
         """Create a compact summary for non-verbose mode."""
@@ -221,9 +205,13 @@ class RipgrepTool(BaseTool):
         matches = []
         lines = output.strip().split('\n')
 
-        for line in lines[:max_results]:
+        for line in lines:
             if not line.strip():
                 continue
+
+            # Stop if we've reached max results
+            if len(matches) >= max_results:
+                break
 
             # Parse ripgrep output format: file:line:content
             if ':' in line:

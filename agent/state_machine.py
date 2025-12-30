@@ -69,6 +69,9 @@ class ReActState:
     current_step: int = 0
     steps: List[ReActStep] = field(default_factory=list)
 
+    # API turn tracking (counts LLM API calls, not ReAct steps)
+    api_turns: int = 0
+
     # Tool usage tracking
     tools_used: Set[str] = field(default_factory=set)
     tool_stats: Dict[str, ToolUsageStats] = field(default_factory=dict)
@@ -86,6 +89,11 @@ class ReActState:
     # Stuck detection
     consecutive_no_tool_calls: int = 0
     last_step_had_tool_calls: bool = False
+
+    def increment_api_turn(self) -> int:
+        """Increment and return the API turn count."""
+        self.api_turns += 1
+        return self.api_turns
 
     def add_step(self, step: ReActStep) -> None:
         """
@@ -361,10 +369,58 @@ class ReActState:
 
         return "\n".join(parts)
 
+    def get_reasoning_trail(self) -> List[str]:
+        """
+        Extract all THOUGHT step content as reasoning texts.
+
+        Returns:
+            List of reasoning text strings in chronological order
+        """
+        return [
+            step.content
+            for step in self.steps
+            if step.step_type == StepType.THOUGHT and step.content.strip()
+        ]
+
+    def get_complete_reasoning_trail(self) -> List[Dict[str, Any]]:
+        """
+        Get complete ReAct cycles with thought, action, and observation.
+
+        Groups consecutive THOUGHT → ACTION → OBSERVATION steps into cycles.
+        Each cycle contains the reasoning, tool used, input, and output.
+
+        Returns:
+            List of cycle dictionaries with keys: thought, tool_name, tool_input, tool_output
+        """
+        cycles = []
+        i = 0
+        while i < len(self.steps):
+            step = self.steps[i]
+            if step.step_type == StepType.THOUGHT:
+                cycle = {"thought": step.content}
+                next_idx = i + 1
+                # Look for following ACTION
+                if next_idx < len(self.steps) and self.steps[next_idx].step_type == StepType.ACTION:
+                    action = self.steps[next_idx]
+                    cycle["tool_name"] = action.tool_name
+                    cycle["tool_input"] = action.tool_input
+                    next_idx += 1
+                    # Look for following OBSERVATION
+                    if next_idx < len(self.steps) and self.steps[next_idx].step_type == StepType.OBSERVATION:
+                        obs = self.steps[next_idx]
+                        cycle["tool_output"] = obs.content  # Use content (summary)
+                        next_idx += 1
+                cycles.append(cycle)
+                i = next_idx  # Move past the processed steps
+            else:
+                i += 1
+        return cycles
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary representation."""
         return {
             "current_step": self.current_step,
+            "api_turns": self.api_turns,
             "steps": [step.to_dict() for step in self.steps],
             "tools_used": list(self.tools_used),
             "tool_stats": {

@@ -53,7 +53,7 @@ def create_streaming_client(
 
 
 def get_agent_input(
-    console, prompt_style, display_string, thinking_mode, user_history, tools_enabled
+    console, prompt_style, display_string, thinking_mode, user_history, tools_enabled, react_agent=None
 ):
     """
     Enhanced input function for the Rails agent.
@@ -73,7 +73,7 @@ def get_agent_input(
         else:
             thinking_part = "/think reasoning"
 
-        instructions = f"{base_instructions}    {thinking_part}    /clear history    /status agent    Esc/Ctrl+C=cancel"
+        instructions = f"{base_instructions}    {thinking_part}    /reasoning    /clear    /status    Esc=cancel"
 
         if token_info:
             terminal_width = console.size.width if hasattr(console, "size") else 120
@@ -118,6 +118,17 @@ def get_agent_input(
             console.print("[dim]Tools are always enabled for Rails analysis[/dim]")
             return None, False, thinking_mode, tools_enabled
 
+        # Handle reasoning toggle
+        if user_input.strip().lower() == "/reasoning":
+            if react_agent:
+                new_value = not react_agent.config.show_reasoning
+                react_agent.config = react_agent.config.update(show_reasoning=new_value)
+                status = "enabled" if new_value else "disabled"
+                console.print(f"[yellow]Reasoning display {status}[/yellow]")
+            else:
+                console.print("[dim]Agent not available for reasoning toggle[/dim]")
+            return None, True, thinking_mode, tools_enabled
+
         return user_input, False, thinking_mode, tools_enabled
 
     except Exception as e:
@@ -132,6 +143,7 @@ def repl(
     project_root: str,
     verbose: bool = False,
     use_streaming: bool = False,
+    show_reasoning: bool = False,
 ) -> int:
     """
     Enhanced interactive Rails code analysis loop with ReAct agent.
@@ -142,6 +154,7 @@ def repl(
         project_root: Rails project root directory
         verbose: Enable verbose mode with detailed logging
         use_streaming: Use streaming API (SSE) vs non-streaming (single request)
+        show_reasoning: Show LLM reasoning trail after final answer
 
     Returns:
         Exit code (0 for success)
@@ -198,10 +211,11 @@ def repl(
         # Simplified: trust the LLM to decide when done, only intervene for true infinite loops
         config = AgentConfig(
             project_root=project_root,
-            max_react_steps=50,  # Safety limit
+            max_react_steps=100,  # Safety limit
             debug_enabled=verbose,
             log_level="DEBUG" if verbose else "WARNING",
             max_exact_repeats=3,  # Only intervene if exact same action repeated 3+ times
+            show_reasoning=show_reasoning,
         )
 
         react_agent = ReactRailsAgent(config=config, session=session)
@@ -274,6 +288,7 @@ def repl(
                 thinking_mode,
                 user_history,
                 tools_enabled,
+                react_agent,
             )
 
             # Handle exit conditions
@@ -422,6 +437,11 @@ Examples:
         action="store_true",
         help="Use streaming API (SSE) instead of blocking (default: blocking)",
     )
+    parser.add_argument(
+        "--show-reasoning",
+        action="store_true",
+        help="Show LLM reasoning trail after the final answer",
+    )
     args = parser.parse_args(argv)
 
     # Setup signal handlers - raise KeyboardInterrupt directly for proper interruption
@@ -457,6 +477,7 @@ Examples:
             project_root=args.project,
             verbose=args.verbose,
             use_streaming=args.streaming,
+            show_reasoning=args.show_reasoning,
         )
         return code
     except Exception as e:

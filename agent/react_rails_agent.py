@@ -23,6 +23,7 @@ from agent.exceptions import (
     ReActLoopError,
 )
 from agent.logging import AgentLogger, log_agent_start, log_agent_complete
+from agent.reasoning_display import format_complete_reasoning_section
 from prompts.system_prompt import RAILS_REACT_SYSTEM_PROMPT
 from chat.conversation import ConversationManager
 
@@ -205,7 +206,15 @@ class ReactRailsAgent:
                 break
 
         # Generate final response
-        return self._generate_final_response()
+        final_response = self._generate_final_response()
+
+        # Display reasoning trail if enabled
+        if self.config.show_reasoning:
+            cycles = self.state_machine.state.get_complete_reasoning_trail()
+            if cycles:
+                format_complete_reasoning_section(cycles, self.console)
+
+        return final_response
 
     def _call_llm_with_tools(self, messages: List[Dict[str, Any]]) -> Any:
         """
@@ -220,7 +229,14 @@ class ReactRailsAgent:
         tool_schemas = self.tool_registry.build_tool_schemas()
 
         with self.logger.operation("llm_call"):
-            return self.llm_client.call_llm(messages, tool_schemas)
+            response = self.llm_client.call_llm(messages, tool_schemas)
+
+        # Track and log API turn count
+        api_turn = self.state_machine.state.increment_api_turn()
+        max_turns = self.config.max_react_steps
+        self.logger.info(f"API Turn: {api_turn}/{max_turns}")
+
+        return response
 
     def _process_llm_response(
         self, llm_response: Any, messages: List[Dict[str, Any]], step_num: int
