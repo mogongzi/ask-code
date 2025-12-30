@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional, Set
+from typing import Optional
 
 
 @dataclass
@@ -18,13 +18,6 @@ class AgentConfig:
     # Core settings
     max_react_steps: int = 20
     project_root: Optional[str] = None
-
-    # Tool configuration
-    allowed_tools: Set[str] = field(default_factory=lambda: {
-        'ripgrep', 'enhanced_sql_rails_search', 'ast_grep',
-        'model_analyzer', 'controller_analyzer', 'route_analyzer',
-        'migration_analyzer', 'transaction_analyzer'
-    })
 
     # LLM configuration
     max_tokens: Optional[int] = None
@@ -81,9 +74,6 @@ class AgentConfig:
         if self.max_exact_repeats <= 0:
             raise ValueError("max_exact_repeats must be positive")
 
-        if not self.allowed_tools:
-            raise ValueError("allowed_tools cannot be empty")
-
     @classmethod
     def create_default(cls) -> AgentConfig:
         """Create a default configuration instance."""
@@ -113,7 +103,6 @@ class AgentConfig:
         current_values = {
             'max_react_steps': self.max_react_steps,
             'project_root': self.project_root,
-            'allowed_tools': self.allowed_tools.copy(),
             'max_tokens': self.max_tokens,
             'timeout': self.timeout,
             'max_exact_repeats': self.max_exact_repeats,
@@ -132,7 +121,6 @@ class AgentConfig:
         return {
             'max_react_steps': self.max_react_steps,
             'project_root': self.project_root,
-            'allowed_tools': list(self.allowed_tools),
             'max_tokens': self.max_tokens,
             'timeout': self.timeout,
             'max_exact_repeats': self.max_exact_repeats,
