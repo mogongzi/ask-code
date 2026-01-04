@@ -105,13 +105,13 @@ class RipgrepTool(BaseTool):
                 cmd.extend(["-C", str(context)])
 
             # Exclude test directories by default (production code search)
-            # These directories should never contain production code
+            # Use **/ prefix to match test directories at any depth in the tree
             cmd.extend([
-                "--glob", "!test/**",
-                "--glob", "!spec/**",
-                "--glob", "!tests/**",
-                "--glob", "!*_test.rb",
-                "--glob", "!*_spec.rb"
+                "--glob", "!**/test/**",
+                "--glob", "!**/spec/**",
+                "--glob", "!**/tests/**",
+                "--glob", "!**/*_test.rb",
+                "--glob", "!**/*_spec.rb"
             ])
 
             # Add file type filters
