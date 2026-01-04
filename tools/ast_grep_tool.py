@@ -12,6 +12,12 @@ from typing import Any, Dict, List
 
 from .base_tool import BaseTool
 
+# Patterns to exclude from search results (production code only)
+_EXCLUDE_PATTERNS = (
+    "/test/", "/spec/", "/tests/",
+    "_test.rb", "_spec.rb"
+)
+
 
 class AstGrepTool(BaseTool):
     @property
@@ -20,7 +26,7 @@ class AstGrepTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Search Ruby code structurally using ast-grep patterns (e.g., class $NAME, def $FN)."
+        return "Search Ruby code structurally using ast-grep patterns (e.g., class $NAME, def $FN). Searches production code only (excludes test/ spec/ directories)."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -79,6 +85,8 @@ class AstGrepTool(BaseTool):
                     continue
                 content = parts[3] if len(parts) >= 4 else ""
                 rel = self._rel_path(file_path)
+                if self._should_exclude(rel):
+                    continue  # Skip test files
                 matches.append({
                     "file": rel,
                     "line": line_no,
@@ -97,4 +105,11 @@ class AstGrepTool(BaseTool):
             return str(Path(file_path).resolve().relative_to(Path(self.project_root).resolve()))
         except Exception:
             return file_path
+
+    def _should_exclude(self, file_path: str) -> bool:
+        """Check if file should be excluded from results (test directories)."""
+        for pattern in _EXCLUDE_PATTERNS:
+            if pattern in file_path:
+                return True
+        return False
 
