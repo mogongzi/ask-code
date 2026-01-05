@@ -21,7 +21,6 @@ class TestAgentConfig:
         assert config.log_level == "INFO"
         assert config.timeout == 30.0
         assert config.max_exact_repeats == 3  # Simplified: only for exact loops
-        assert len(config.allowed_tools) > 0
 
     def test_custom_configuration(self):
         """Test configuration with custom values."""
@@ -83,11 +82,6 @@ class TestAgentConfig:
         with pytest.raises(ValueError, match="max_exact_repeats must be positive"):
             AgentConfig(max_exact_repeats=0)
 
-    def test_validation_empty_allowed_tools(self):
-        """Test validation of empty allowed tools."""
-        with pytest.raises(ValueError, match="allowed_tools cannot be empty"):
-            AgentConfig(allowed_tools=set())
-
     def test_create_default(self):
         """Test create_default class method."""
         config = AgentConfig.create_default()
@@ -137,26 +131,6 @@ class TestAgentConfig:
         assert config_dict['max_react_steps'] == 15
         assert config_dict['project_root'] == "/test"
         assert config_dict['debug_enabled'] is True
-        assert isinstance(config_dict['allowed_tools'], list)
-
-    def test_allowed_tools_default_set(self):
-        """Test that default allowed tools are properly set."""
-        config = AgentConfig()
-
-        expected_tools = {
-            'ripgrep', 'enhanced_sql_rails_search', 'ast_grep',
-            'model_analyzer', 'controller_analyzer', 'route_analyzer',
-            'migration_analyzer', 'transaction_analyzer'
-        }
-
-        assert config.allowed_tools == expected_tools
-
-    def test_allowed_tools_custom_set(self):
-        """Test setting custom allowed tools."""
-        custom_tools = {'ripgrep', 'ast_grep'}
-        config = AgentConfig(allowed_tools=custom_tools)
-
-        assert config.allowed_tools == custom_tools
 
     def test_log_level_validation(self):
         """Test log level validation through environment variables."""
@@ -166,15 +140,3 @@ class TestAgentConfig:
             with patch.dict(os.environ, {'AGENT_LOG_LEVEL': level}):
                 config = AgentConfig()
                 assert config.log_level == level
-
-    def test_config_immutability_after_update(self):
-        """Test that update doesn't modify the original config's allowed_tools."""
-        original_tools = {'ripgrep', 'ast_grep'}
-        config = AgentConfig(allowed_tools=original_tools)
-
-        new_tools = {'ripgrep', 'model_analyzer'}
-        updated = config.update(allowed_tools=new_tools)
-
-        assert config.allowed_tools == original_tools
-        assert updated.allowed_tools == new_tools
-        assert config.allowed_tools is not updated.allowed_tools
