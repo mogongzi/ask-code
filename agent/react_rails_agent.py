@@ -297,11 +297,22 @@ class ReactRailsAgent:
                     # Check if tool returned an error
                     if self._tool_result_has_error(result_text):
                         error_msg = self._extract_tool_error(result_text)
-                        self.logger.error(f"Tool {tool_call.name} returned error: {error_msg}")
-                        self.state_machine.state.stop_with_reason(
-                            f"Tool execution failed: {error_msg}"
-                        )
-                        return True  # Stop immediately
+
+                        if self._is_critical_tool_error(error_msg):
+                            # Critical error - stop immediately
+                            self.logger.error(
+                                f"Critical tool error from {tool_call.name}: {error_msg}"
+                            )
+                            self.state_machine.state.stop_with_reason(
+                                f"Tool execution failed: {error_msg}"
+                            )
+                            return True
+                        else:
+                            # Recoverable error - log warning and let LLM observe and continue
+                            self.logger.warning(
+                                f"Tool {tool_call.name} returned error: {error_msg}"
+                            )
+                            # Don't stop - the error is already in the observation for LLM to see
 
         # Check for stuck state: no tool calls for multiple consecutive steps
         if self.state_machine.state.is_stuck_without_tools(max_consecutive_no_tools=2):
@@ -573,6 +584,31 @@ class ReactRailsAgent:
             pass
 
         return "Unknown error"
+
+    def _is_critical_tool_error(self, error_msg: str) -> bool:
+        """
+        Determine if a tool error is critical (requires stopping) vs recoverable.
+
+        Critical errors indicate configuration/system issues that prevent
+        the agent from functioning properly. Recoverable errors mean the LLM
+        tried something that didn't work (e.g., path doesn't exist), and it
+        can observe the error and try a different approach.
+
+        Args:
+            error_msg: The error message from the tool
+
+        Returns:
+            True if the error is critical and agent should stop,
+            False if the error is recoverable and agent should continue
+        """
+        critical_patterns = [
+            "Project root not found",
+            "Path outside project root",
+            "Permission denied",
+            "Unknown tool:",
+            "No project root configured",
+        ]
+        return any(pattern in error_msg for pattern in critical_patterns)
 
     def set_project_root(self, project_root: str) -> None:
         """

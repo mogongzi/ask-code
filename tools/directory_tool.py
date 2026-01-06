@@ -142,19 +142,8 @@ class DirectoryTool(BaseTool):
             if not is_dir and not fnmatch(name, pattern):
                 continue
 
-            entry = {
-                "name": name,
-                "path": rel_path,
-                "type": "directory" if is_dir else "file"
-            }
-
-            # Add file size for files
-            if not is_dir:
-                try:
-                    size = item.stat().st_size
-                    entry["size"] = self._format_size(size)
-                except:
-                    pass
+            # Use trailing / for directories (like ls -F)
+            entry = {"path": rel_path + "/" if is_dir else rel_path}
 
             entries.append(entry)
 
@@ -174,30 +163,19 @@ class DirectoryTool(BaseTool):
 
         return entries
 
-    def _format_size(self, size: int) -> str:
-        """Format file size in human-readable format."""
-        for unit in ["B", "KB", "MB", "GB"]:
-            if size < 1024:
-                return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
-            size /= 1024
-        return f"{size:.1f}TB"
-
     def create_compact_output(self, full_result: Any) -> Any:
         """Create compact output for display."""
         if isinstance(full_result, dict) and "entries" in full_result:
             entries = full_result["entries"]
-            # Show just names in compact mode
-            names = []
-            for e in entries[:20]:
-                prefix = "[D] " if e["type"] == "directory" else "    "
-                names.append(f"{prefix}{e['name']}")
+            # Show just paths in compact mode
+            paths = [e["path"] for e in entries[:20]]
 
             if len(entries) > 20:
-                names.append(f"    ... and {len(entries) - 20} more")
+                paths.append(f"... and {len(entries) - 20} more")
 
             return {
                 "path": full_result.get("path", "."),
                 "total": full_result.get("total_entries", len(entries)),
-                "listing": "\n".join(names)
+                "listing": "\n".join(paths)
             }
         return full_result
