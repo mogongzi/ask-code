@@ -100,6 +100,7 @@ def build_payload(
             payload["system"] = formatted_system
 
     if tools:
+        tools[-1]["cache_control"] = {"type": "ephemeral"}
         payload["tools"] = tools
 
     # Messages should come after system prompt and tool definitions

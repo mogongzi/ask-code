@@ -9,9 +9,8 @@ import json
 from typing import Any, Dict, List
 
 from rich.console import Console
-from rich.panel import Panel
+from rich.rule import Rule
 from rich.text import Text
-from rich import box
 
 
 def _truncate_text(text: str, max_length: int = 0) -> str:
@@ -142,18 +141,11 @@ def format_complete_reasoning_section(cycles: List[Dict[str, Any]], console: Con
 
         content.append("\n")
 
-    # Create panel with distinct styling
-    panel = Panel(
-        content,
-        title="[bold cyan]ReAct Trace[/bold cyan]",
-        title_align="left",
-        border_style="dim cyan",
-        box=box.ROUNDED,
-        padding=(0, 1),
-    )
-
+    # Display with line separators instead of panel box
     console.print()  # Add spacing
-    console.print(panel)
+    console.print(Rule("ReAct Trace", style="dim cyan", align="left"))
+    console.print(content)
+    console.print(Rule(style="dim cyan"))
 
 
 def format_reasoning_section(reasoning_texts: List[str], console: Console) -> None:
@@ -176,18 +168,11 @@ def format_reasoning_section(reasoning_texts: List[str], console: Console) -> No
         content.append(f"  Step {i}: ", style="bold white")
         content.append(f"{thought}\n\n", style="white")
 
-    # Create panel with distinct styling
-    panel = Panel(
-        content,
-        title="[bold cyan]LLM Reasoning Trail[/bold cyan]",
-        title_align="left",
-        border_style="dim cyan",
-        box=box.ROUNDED,
-        padding=(0, 1),
-    )
-
+    # Display with line separators instead of panel box
     console.print()  # Add spacing
-    console.print(panel)
+    console.print(Rule("LLM Reasoning Trail", style="dim cyan", align="left"))
+    console.print(content)
+    console.print(Rule(style="dim cyan"))
 
 
 def get_reasoning_as_markdown(reasoning_texts: List[str]) -> str:

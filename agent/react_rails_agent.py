@@ -377,8 +377,7 @@ class ReactRailsAgent:
 
     def _build_context_prompt(self) -> str:
         """Build context-aware prompt for the current step."""
-        available_tools = set(self.tool_registry.get_tool_names())
-        return self.state_machine.get_context_prompt(available_tools)
+        return self.state_machine.get_context_prompt()
 
     def _check_for_loops(self, step_num: int) -> None:
         """

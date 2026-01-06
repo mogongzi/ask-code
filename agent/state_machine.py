@@ -203,97 +203,6 @@ class ReActState:
 
         return False
 
-    def has_high_quality_results(self) -> bool:
-        """Check if any step has produced high-quality results."""
-        # Check observation steps for tool outputs
-        # Observations are always preceded by ACTION steps, so we can
-        # look back to find the tool name
-        for i, step in enumerate(self.steps):
-            if step.step_type == StepType.OBSERVATION and step.tool_output:
-                # Find the preceding ACTION step to get tool name
-                tool_name = ""
-                if i > 0 and self.steps[i-1].step_type == StepType.ACTION:
-                    tool_name = self.steps[i-1].tool_name or ""
-
-                # Check if the observation contains structured results
-                if self._has_structured_matches(step.tool_output, tool_name):
-                    return True
-
-        return False
-
-    def _has_structured_matches(self, result: str, tool_name: str) -> bool:
-        """
-        Check if a tool result contains structured matches.
-
-        Uses a registry of validators for different tool types.
-        Falls back to checking for non-empty JSON structures.
-        """
-        try:
-            import json
-
-            parsed = json.loads(result) if isinstance(result, str) else result
-
-            if isinstance(parsed, dict):
-                # Common pattern: many tools return results with "matches" array
-                if "matches" in parsed:
-                    matches = parsed.get("matches", [])
-
-                    # Check if we have matches
-                    if not (isinstance(matches, list) and len(matches) > 0):
-                        return False
-
-                    # For SQL search tools, verify matches are HIGH QUALITY not just partial
-                    if tool_name in ["enhanced_sql_rails_search", "ripgrep", "sql_rails_search"]:
-                        # Check match quality indicators
-                        for match in matches:
-                            if isinstance(match, dict):
-                                # Get confidence value (can be string like "high", "1.00", or number)
-                                confidence = match.get("confidence")
-
-                                # High confidence string match
-                                if confidence == "high":
-                                    logger.debug(f"Found high-confidence match in {tool_name}")
-                                    return True
-
-                                # Numeric confidence (string like "1.00" or "0.85" or actual number)
-                                if confidence is not None:
-                                    try:
-                                        conf_value = float(confidence) if isinstance(confidence, str) else confidence
-                                        if conf_value >= 0.8:
-                                            logger.debug(f"Found high-confidence match ({conf_value}) in {tool_name}")
-                                            return True
-                                    except (ValueError, TypeError):
-                                        pass
-
-                                # Exact match context
-                                if match.get("context") == "exact_match":
-                                    logger.debug(f"Found exact match in {tool_name}")
-                                    return True
-                                # Match score above threshold
-                                score = match.get("score", 0)
-                                if isinstance(score, (int, float)) and score >= 0.8:
-                                    logger.debug(f"Found high-score match ({score}) in {tool_name}")
-                                    return True
-
-                        # If all matches are partial/low confidence, don't count as high quality
-                        logger.debug(f"All matches in {tool_name} are partial/low quality")
-                        return False
-
-                    # For other tools with matches, any match counts
-                    return True
-
-                # Common pattern: analysis tools return results with "analysis" or "methods"
-                if tool_name in ["model_analyzer", "controller_analyzer"]:
-                    return bool(parsed.get("analysis")) or bool(parsed.get("methods"))
-
-                # Fallback: any non-empty dict is considered valid
-                return len(parsed) > 0
-
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        return False
-
     def request_finalization(self) -> None:
         """Request finalization of the ReAct loop."""
         self.finalize_requested = True
@@ -537,76 +446,22 @@ class ReActStateMachine:
         self.state.add_step(step)
         self.state.stop_with_reason("Final answer provided")
 
-    def get_context_prompt(self, available_tools: Set[str]) -> str:
+    def get_context_prompt(self) -> str:
         """
-        Build context-aware prompt for next step.
+        Build minimal context prompt for next step.
 
-        Generates dynamic suggestions based on:
-        - Tools already used
-        - Quality of results found
-        - Unused tools available
+        Only provides step number and recent activity summary.
+        The LLM reasons freely based on the system prompt.
         """
-        tools_used = list(self.state.tools_used)
-        unused_tools = self.state.get_unused_tools(available_tools)
-
         lines = [
             f"\nStep {self.state.current_step + 1}: continue from prior reasoning."
         ]
 
-        if tools_used:
-            lines.append(f"Tools used so far: {', '.join(tools_used)}.")
+        if self.state.tools_used:
+            lines.append(f"Tools used so far: {', '.join(self.state.tools_used)}.")
 
         if self.state.search_attempts:
             recent_attempts = "; ".join(self.state.search_attempts[-2:])
             lines.append(f"Recent searches: {recent_attempts}.")
 
-        # Dynamic strategy based on current state
-        strategy = self._generate_next_strategy(tools_used, unused_tools)
-        if strategy:
-            lines.append(f"Next idea: {strategy}")
-
         return " ".join(lines)
-
-    def _generate_next_strategy(self, tools_used: List[str], unused_tools: List[str]) -> str:
-        """
-        Generate a dynamic strategy suggestion based on state.
-
-        Args:
-            tools_used: List of tools already used
-            unused_tools: List of available unused tools
-
-        Returns:
-            Strategy suggestion string
-        """
-        # If no tools used yet, suggest starting with search
-        if not tools_used:
-            if "enhanced_sql_rails_search" in unused_tools:
-                return "Start with enhanced_sql_rails_search for SQL queries, or ripgrep for general code search."
-            elif "ripgrep" in unused_tools:
-                return "Use ripgrep to search for patterns in the codebase."
-
-        # If only search tools used, suggest analysis tools
-        search_tools = {"ripgrep", "enhanced_sql_rails_search", "ast_grep"}
-        if all(tool in search_tools for tool in tools_used):
-            if "model_analyzer" in unused_tools:
-                return "Inspect related models with model_analyzer for deeper analysis."
-            elif "controller_analyzer" in unused_tools:
-                return "Examine controllers with controller_analyzer to understand request handling."
-
-        # If no results found yet, suggest different search approach
-        if not self.state.has_high_quality_results():
-            if "ast_grep" in unused_tools:
-                return "Try ast_grep for structural code search (classes, methods, patterns)."
-            elif "ripgrep" in unused_tools:
-                return "Use ripgrep for flexible text-based search."
-
-        # If we have results but haven't used analysis tools, suggest them
-        analysis_tools = {"model_analyzer", "controller_analyzer", "file_reader"}
-        if self.state.has_high_quality_results() and not any(tool in analysis_tools for tool in tools_used):
-            return "Consider using analysis tools to examine specific files in detail."
-
-        # Default: encourage synthesis if we have sufficient information
-        if len(tools_used) >= 3 and self.state.has_high_quality_results():
-            return "You have sufficient information - consider synthesizing findings into a final answer."
-
-        return ""
