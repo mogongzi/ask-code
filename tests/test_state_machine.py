@@ -415,4 +415,151 @@ class TestGetCompleteReasoningTrail:
         assert len(cycles) == 1
         assert cycles[0]["thought"] == "My thought"
         assert cycles[0]["tool_name"] == "ripgrep"
-        assert "tool_output" not in cycles[0]
+        # tool_output is None when there's no observation (not omitted)
+        assert cycles[0]["tool_output"] is None
+        assert len(cycles[0]["tools"]) == 1
+        assert cycles[0]["tools"][0]["tool_output"] is None
+
+    def test_parallel_tool_calls(self):
+        """Test extracting cycles with multiple parallel tool calls."""
+        state = ReActState()
+
+        # THOUGHT
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Search in parallel"))
+
+        # Multiple ACTIONs (parallel tool calls)
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION,
+            content="ripgrep search",
+            tool_name="ripgrep",
+            tool_input={"pattern": "Member.where"}
+        ))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION,
+            content="ast_grep search",
+            tool_name="ast_grep",
+            tool_input={"pattern": "Member.where(id: $_)"}
+        ))
+
+        # Multiple OBSERVATIONs
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="ripgrep: Found 3 matches"))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="ast_grep: Found 1 match"))
+
+        cycles = state.get_complete_reasoning_trail()
+
+        # Single thought = single cycle with multiple tools
+        assert len(cycles) == 1
+        assert cycles[0]["thought"] == "Search in parallel"
+
+        # Check tools array has all parallel calls
+        assert "tools" in cycles[0]
+        assert len(cycles[0]["tools"]) == 2
+        assert cycles[0]["tools"][0]["tool_name"] == "ripgrep"
+        assert cycles[0]["tools"][0]["tool_input"] == {"pattern": "Member.where"}
+        assert cycles[0]["tools"][0]["tool_output"] == "ripgrep: Found 3 matches"
+        assert cycles[0]["tools"][1]["tool_name"] == "ast_grep"
+        assert cycles[0]["tools"][1]["tool_input"] == {"pattern": "Member.where(id: $_)"}
+        assert cycles[0]["tools"][1]["tool_output"] == "ast_grep: Found 1 match"
+
+        # Backward compatibility: first tool also at top level
+        assert cycles[0]["tool_name"] == "ripgrep"
+        assert cycles[0]["tool_input"] == {"pattern": "Member.where"}
+        assert cycles[0]["tool_output"] == "ripgrep: Found 3 matches"
+
+    def test_parallel_calls_followed_by_sequential(self):
+        """Test mixed parallel and sequential tool calls."""
+        state = ReActState()
+
+        # First cycle: parallel calls
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Parallel search"))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION, content="tool1", tool_name="ripgrep", tool_input={"p": "1"}
+        ))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION, content="tool2", tool_name="ast_grep", tool_input={"p": "2"}
+        ))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="Result 1"))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="Result 2"))
+
+        # Second cycle: single call
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Read file"))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION, content="read", tool_name="file_reader", tool_input={"path": "x.rb"}
+        ))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="File content"))
+
+        cycles = state.get_complete_reasoning_trail()
+
+        assert len(cycles) == 2
+
+        # First cycle has 2 tools
+        assert len(cycles[0]["tools"]) == 2
+        assert cycles[0]["tools"][0]["tool_name"] == "ripgrep"
+        assert cycles[0]["tools"][1]["tool_name"] == "ast_grep"
+
+        # Second cycle has 1 tool
+        assert len(cycles[1]["tools"]) == 1
+        assert cycles[1]["tools"][0]["tool_name"] == "file_reader"
+        assert cycles[1]["tool_name"] == "file_reader"
+
+    def test_orphaned_tool_calls_without_thought(self):
+        """Test tool calls without preceding THOUGHT are captured."""
+        state = ReActState()
+
+        # ACTION without preceding THOUGHT (LLM made tool call without reasoning text)
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION,
+            content="ripgrep search",
+            tool_name="ripgrep",
+            tool_input={"pattern": "User"}
+        ))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="Found 5 matches"))
+
+        cycles = state.get_complete_reasoning_trail()
+
+        # Should create a cycle even without THOUGHT
+        assert len(cycles) == 1
+        assert cycles[0]["thought"] == ""  # Empty thought
+        assert len(cycles[0]["tools"]) == 1
+        assert cycles[0]["tools"][0]["tool_name"] == "ripgrep"
+        assert cycles[0]["tools"][0]["tool_output"] == "Found 5 matches"
+
+    def test_mixed_thought_and_orphaned_cycles(self):
+        """Test mix of cycles with and without THOUGHT."""
+        state = ReActState()
+
+        # First cycle: normal with THOUGHT
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Let me search"))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION, content="tool1", tool_name="ripgrep", tool_input={"p": "1"}
+        ))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="Result 1"))
+
+        # Second cycle: orphaned (no THOUGHT)
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION, content="tool2", tool_name="file_reader", tool_input={"path": "x.rb"}
+        ))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="File content"))
+
+        # Third cycle: normal with THOUGHT
+        state.add_step(ReActStep(step_type=StepType.THOUGHT, content="Now I understand"))
+        state.add_step(ReActStep(
+            step_type=StepType.ACTION, content="tool3", tool_name="model_analyzer", tool_input={"m": "User"}
+        ))
+        state.add_step(ReActStep(step_type=StepType.OBSERVATION, content="Model info"))
+
+        cycles = state.get_complete_reasoning_trail()
+
+        assert len(cycles) == 3
+
+        # First cycle: has thought
+        assert cycles[0]["thought"] == "Let me search"
+        assert cycles[0]["tools"][0]["tool_name"] == "ripgrep"
+
+        # Second cycle: orphaned (empty thought)
+        assert cycles[1]["thought"] == ""
+        assert cycles[1]["tools"][0]["tool_name"] == "file_reader"
+
+        # Third cycle: has thought
+        assert cycles[2]["thought"] == "Now I understand"
+        assert cycles[2]["tools"][0]["tool_name"] == "model_analyzer"

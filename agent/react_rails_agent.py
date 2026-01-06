@@ -278,19 +278,17 @@ class ReactRailsAgent:
                 if context_prompt:
                     self._append_to_last_user_message(messages, context_prompt)
 
-            # Process each tool call
+            # Record all ACTIONs first (for proper parallel tool call grouping)
             for tool_call in llm_response.tool_calls:
-                # tool_call is a ToolCall object, not a dict
                 tool_name = tool_call.name
                 tool_input = tool_call.input
-
-                # Record action
                 self.state_machine.record_action(tool_name, tool_input)
                 self.logger.log_react_step(
                     "action", step_num, f"Used {tool_name}", tool_name
                 )
 
-                # Record observation
+            # Then record all OBSERVATIONs (maintains consecutive grouping)
+            for tool_call in llm_response.tool_calls:
                 if tool_call.result:
                     result_text = tool_call.result
                     self.state_machine.record_observation(result_text, result_text)
@@ -299,7 +297,7 @@ class ReactRailsAgent:
                     # Check if tool returned an error
                     if self._tool_result_has_error(result_text):
                         error_msg = self._extract_tool_error(result_text)
-                        self.logger.error(f"Tool {tool_name} returned error: {error_msg}")
+                        self.logger.error(f"Tool {tool_call.name} returned error: {error_msg}")
                         self.state_machine.state.stop_with_reason(
                             f"Tool execution failed: {error_msg}"
                         )

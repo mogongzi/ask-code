@@ -3,11 +3,93 @@ Ripgrep tool for fast text search in Rails projects.
 """
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .base_tool import BaseTool
+
+# Patterns that require PCRE2 (lookahead/lookbehind assertions)
+_PCRE2_REQUIRED_PATTERNS = re.compile(r'\(\?[=!<]')
+
+
+def _fix_pcre2_escapes(pattern: str) -> str:
+    """
+    Fix escaped characters for PCRE2 compatibility with ripgrep.
+
+    Ripgrep's PCRE2 has a parsing issue where escaped chars like \\., \\( or \\)
+    anywhere in the pattern before a lookahead/lookbehind cause parse errors.
+
+    This function converts:
+    - \\. -> [.]
+    - \\( -> [(]
+    - \\) -> [)]
+
+    Only applied when pattern contains lookahead/lookbehind assertions.
+    """
+    # Convert escaped special chars to bracket notation
+    # This fixes PCRE2 parsing issues with patterns like \. or \( before lookaheads
+    result = []
+    i = 0
+    while i < len(pattern):
+        if pattern[i] == '\\' and i + 1 < len(pattern):
+            next_char = pattern[i + 1]
+            if next_char in '.()':
+                # Convert \. to [.], \( to [(], \) to [)]
+                result.append(f'[{next_char}]')
+                i += 2
+                continue
+        result.append(pattern[i])
+        i += 1
+
+    pattern = ''.join(result)
+
+    # Also fix escapes inside lookahead/lookbehind groups
+    result = []
+    i = 0
+    while i < len(pattern):
+        # Check for lookahead/lookbehind start
+        if pattern[i:i+2] == '(?' and i + 2 < len(pattern) and pattern[i+2] in '=!<':
+            # Find the matching closing paren
+            depth = 1
+            start = i
+            i += 3
+            if pattern[i-1] == '<' and i < len(pattern):
+                i += 1  # Skip = or ! after <
+
+            lookahead_content = []
+            while i < len(pattern) and depth > 0:
+                if pattern[i] == '(':
+                    depth += 1
+                    lookahead_content.append(pattern[i])
+                elif pattern[i] == ')':
+                    depth -= 1
+                    if depth > 0:
+                        lookahead_content.append(pattern[i])
+                elif pattern[i] == '\\' and i + 1 < len(pattern):
+                    # Convert \. to [.] etc. inside lookahead
+                    next_char = pattern[i + 1]
+                    if next_char in '.[]{}^$|*+?':
+                        lookahead_content.append(f'[{next_char}]')
+                        i += 1
+                    else:
+                        lookahead_content.append(pattern[i])
+                else:
+                    lookahead_content.append(pattern[i])
+                i += 1
+
+            # Reconstruct the lookahead with fixed content
+            result.append(pattern[start:start+3])
+            if pattern[start+2] == '<':
+                result.append(pattern[start+3])
+            result.append(''.join(lookahead_content))
+            result.append(')')
+        else:
+            result.append(pattern[i])
+            i += 1
+
+    return ''.join(result)
 
 
 class RipgrepTool(BaseTool):
@@ -19,7 +101,7 @@ class RipgrepTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Fast text search in Rails codebase using ripgrep. Searches production code only (excludes test/ spec/ directories). Excellent for finding exact code patterns, method calls, and string matches."
+        return "Fast text search in Rails codebase using ripgrep. Searches .rb and .erb files by default, excludes test/spec directories. Excellent for finding exact code patterns, method calls, and string matches."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -34,7 +116,7 @@ class RipgrepTool(BaseTool):
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "File extensions to search (e.g., ['rb', 'erb'])",
-                    "default": ["rb"]
+                    "default": ["rb", "erb"]
                 },
                 "context": {
                     "type": "integer",
@@ -79,7 +161,7 @@ class RipgrepTool(BaseTool):
         if not self.project_root or not Path(self.project_root).exists():
             return {"error": "Project root not found"}
 
-        file_types = input_params.get("file_types", ["rb"])
+        file_types = input_params.get("file_types", ["rb", "erb"])
         context = input_params.get("context", 2)
         max_results = input_params.get("max_results", 20)
         case_insensitive = bool(input_params.get("case_insensitive", True))
@@ -95,6 +177,14 @@ class RipgrepTool(BaseTool):
         try:
             # Build ripgrep command
             cmd = ["rg", "--line-number", "--with-filename"]
+
+            # Check if pattern requires PCRE2 (lookahead/lookbehind)
+            needs_pcre2 = bool(_PCRE2_REQUIRED_PATTERNS.search(pattern))
+            if needs_pcre2:
+                cmd.append("-P")  # Use PCRE2 for advanced regex features
+                # Fix escaped chars that cause ripgrep PCRE2 parsing issues
+                pattern = _fix_pcre2_escapes(pattern)
+                self._debug_log("🔧 Using PCRE2 engine for lookahead/lookbehind pattern")
 
             # Case-insensitive by default to avoid false negatives on Rails conventions
             if case_insensitive:
@@ -140,6 +230,12 @@ class RipgrepTool(BaseTool):
             if result.returncode != 0:
                 if result.returncode == 1:  # No matches found
                     return {"matches": [], "total": 0, "message": "No matches found"}
+                elif result.returncode == 2 and needs_pcre2 and "PCRE2" in result.stderr:
+                    # PCRE2 not available - suggest simpler pattern
+                    return {
+                        "error": "Pattern uses lookahead/lookbehind which requires PCRE2. "
+                                 "Try a simpler pattern without (?=...), (?!...), (?<=...), or (?<!...)"
+                    }
                 else:
                     return {"error": f"Ripgrep error: {result.stderr}"}
 
@@ -177,7 +273,6 @@ class RipgrepTool(BaseTool):
             top_matches.append({
                 "file": match.get("file", ""),
                 "line": match.get("line", 0),
-                "context": match.get("context", "match"),
                 "snippet": snippet
             })
 
@@ -231,8 +326,7 @@ class RipgrepTool(BaseTool):
                         matches.append({
                             "file": str(rel_path),
                             "line": line_number,
-                            "content": content.strip(),
-                            "context": "match"
+                            "content": content.strip()
                         })
                     except ValueError:
                         # Line number parsing failed, might be context line
@@ -249,7 +343,7 @@ class RipgrepTool(BaseTool):
         if not pattern or not isinstance(pattern, str):
             return False
 
-        file_types = input_params.get("file_types", ["rb"])
+        file_types = input_params.get("file_types", ["rb", "erb"])
         if not isinstance(file_types, list):
             return False
 

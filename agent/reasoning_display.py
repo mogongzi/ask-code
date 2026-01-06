@@ -25,6 +25,42 @@ def _truncate_text(text: str, max_length: int = 0) -> str:
     return first_line
 
 
+def _format_tool_output(output: str, indent: str = "        ") -> str:
+    """
+    Format tool output for display, preserving structure.
+
+    Args:
+        output: Raw tool output (often JSON)
+        indent: Indentation prefix for continuation lines
+
+    Returns:
+        Formatted output string with proper indentation
+    """
+    if not output:
+        return ""
+
+    output_str = str(output).strip()
+
+    # Try to parse and pretty-print JSON
+    try:
+        parsed = json.loads(output_str)
+        # Pretty print with indentation
+        formatted = json.dumps(parsed, indent=2, ensure_ascii=False)
+        # Add indent to each line after the first
+        lines = formatted.split('\n')
+        if len(lines) > 1:
+            indented_lines = [lines[0]] + [indent + line for line in lines[1:]]
+            return '\n'.join(indented_lines)
+        return formatted
+    except (json.JSONDecodeError, TypeError):
+        # Not JSON, handle as plain text
+        lines = output_str.split('\n')
+        if len(lines) > 1:
+            indented_lines = [lines[0]] + [indent + line for line in lines[1:]]
+            return '\n'.join(indented_lines)
+        return output_str
+
+
 def _format_tool_input(tool_input: Dict[str, Any], max_length: int = 0) -> str:
     """Format tool input as compact JSON string."""
     if not tool_input:
@@ -45,10 +81,14 @@ def format_complete_reasoning_section(cycles: List[Dict[str, Any]], console: Con
     """
     Display complete ReAct cycles in a visually distinct panel.
 
-    Each cycle shows: thought, tool name, tool input, and tool output.
+    Each cycle shows: thought, tool name(s), tool input(s), and tool output(s).
+    Supports both single tool calls and parallel tool calls per cycle.
 
     Args:
-        cycles: List of cycle dicts with keys: thought, tool_name, tool_input, tool_output
+        cycles: List of cycle dicts with keys:
+            - thought: reasoning content
+            - tools: list of {tool_name, tool_input, tool_output} (for parallel calls)
+            - tool_name, tool_input, tool_output: single tool (backward compat)
         console: Rich console instance for output
     """
     if not cycles:
@@ -61,27 +101,44 @@ def format_complete_reasoning_section(cycles: List[Dict[str, Any]], console: Con
         # Thought line (first line only, no truncation)
         thought = _truncate_text(cycle.get("thought", ""))
         content.append(f"  ▸ Step {i}: ", style="bold white")
-        content.append(f"{thought}\n", style="white")
+        if thought:
+            content.append(f"{thought}\n", style="white")
+        else:
+            # Tool call without reasoning text from LLM
+            content.append("(tool call)\n", style="dim white")
 
-        # Tool info (if present)
-        tool_name = cycle.get("tool_name")
-        if tool_name:
-            content.append(f"    Tool: ", style="dim")
-            content.append(f"{tool_name}\n", style="cyan")
+        # Get tools list (support both new parallel format and legacy single tool)
+        tools = cycle.get("tools", [])
+        if not tools and cycle.get("tool_name"):
+            # Backward compatibility: convert single tool to list format
+            tools = [{
+                "tool_name": cycle.get("tool_name"),
+                "tool_input": cycle.get("tool_input"),
+                "tool_output": cycle.get("tool_output")
+            }]
 
-            # Tool input (full JSON, no truncation)
-            tool_input = cycle.get("tool_input")
-            if tool_input:
-                input_str = _format_tool_input(tool_input)
-                content.append(f"    Input: ", style="dim")
-                content.append(f"{input_str}\n", style="yellow")
+        # Display each tool
+        for tool_idx, tool in enumerate(tools):
+            tool_name = tool.get("tool_name")
+            if tool_name:
+                # Use "Tool" for single tool, "Tool N" for multiple
+                prefix = "    Tool" if len(tools) == 1 else f"    Tool {tool_idx + 1}"
+                content.append(f"{prefix}: ", style="dim")
+                content.append(f"{tool_name}\n", style="cyan")
 
-            # Tool output (first line only, no truncation)
-            tool_output = cycle.get("tool_output")
-            if tool_output:
-                output_str = _truncate_text(str(tool_output))
-                content.append(f"    Output: ", style="dim")
-                content.append(f"{output_str}\n", style="green")
+                # Tool input (full JSON, no truncation)
+                tool_input = tool.get("tool_input")
+                if tool_input:
+                    input_str = _format_tool_input(tool_input)
+                    content.append(f"      Input: ", style="dim")
+                    content.append(f"{input_str}\n", style="yellow")
+
+                # Tool output (full output with proper formatting)
+                tool_output = tool.get("tool_output")
+                if tool_output:
+                    output_str = _format_tool_output(str(tool_output))
+                    content.append(f"      Output: ", style="dim")
+                    content.append(f"{output_str}\n", style="green")
 
         content.append("\n")
 

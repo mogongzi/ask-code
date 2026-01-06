@@ -18,6 +18,9 @@ _EXCLUDE_PATTERNS = (
     "_test.rb", "_spec.rb"
 )
 
+# Only include Ruby and ERB files
+_VALID_EXTENSIONS = (".rb", ".erb")
+
 
 class AstGrepTool(BaseTool):
     @property
@@ -26,7 +29,7 @@ class AstGrepTool(BaseTool):
 
     @property
     def description(self) -> str:
-        return "Search Ruby code structurally using ast-grep patterns (e.g., class $NAME, def $FN). Searches production code only (excludes test/ spec/ directories)."
+        return "Search Ruby code structurally using ast-grep patterns (e.g., class $NAME, def $FN). Searches .rb and .erb files only, excludes test/spec directories."
 
     @property
     def parameters(self) -> Dict[str, Any]:
@@ -90,8 +93,7 @@ class AstGrepTool(BaseTool):
                 matches.append({
                     "file": rel,
                     "line": line_no,
-                    "content": content.strip(),
-                    "context": "match",
+                    "content": content.strip()
                 })
 
             return {"matches": matches, "total": len(matches), "pattern": pattern}
@@ -107,7 +109,11 @@ class AstGrepTool(BaseTool):
             return file_path
 
     def _should_exclude(self, file_path: str) -> bool:
-        """Check if file should be excluded from results (test directories)."""
+        """Check if file should be excluded from results (test directories and non-Ruby files)."""
+        # Only include Ruby and ERB files
+        if not file_path.endswith(_VALID_EXTENSIONS):
+            return True
+        # Exclude test directories
         for pattern in _EXCLUDE_PATTERNS:
             if pattern in file_path:
                 return True

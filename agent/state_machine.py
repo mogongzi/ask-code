@@ -384,36 +384,75 @@ class ReActState:
 
     def get_complete_reasoning_trail(self) -> List[Dict[str, Any]]:
         """
-        Get complete ReAct cycles with thought, action, and observation.
+        Get complete ReAct cycles with thought, action(s), and observation(s).
 
-        Groups consecutive THOUGHT → ACTION → OBSERVATION steps into cycles.
-        Each cycle contains the reasoning, tool used, input, and output.
+        Groups steps into cycles, handling:
+        - THOUGHT → ACTION(s) → OBSERVATION(s): standard ReAct cycle
+        - ACTION(s) → OBSERVATION(s) without THOUGHT: tool calls without reasoning text
+        - Parallel tool calls: multiple ACTIONs collected into single cycle
 
         Returns:
-            List of cycle dictionaries with keys: thought, tool_name, tool_input, tool_output
+            List of cycle dictionaries with keys:
+            - thought: reasoning content (empty string if no THOUGHT)
+            - tools: list of {tool_name, tool_input, tool_output} dicts
+            - tool_name, tool_input, tool_output: first tool (backward compatibility)
         """
         cycles = []
         i = 0
         while i < len(self.steps):
             step = self.steps[i]
+
+            # Start a new cycle from THOUGHT or ACTION
             if step.step_type == StepType.THOUGHT:
-                cycle = {"thought": step.content}
+                # Standard cycle: THOUGHT → ACTION(s) → OBSERVATION(s)
+                cycle = {
+                    "thought": step.content,
+                    "tools": []
+                }
                 next_idx = i + 1
-                # Look for following ACTION
-                if next_idx < len(self.steps) and self.steps[next_idx].step_type == StepType.ACTION:
-                    action = self.steps[next_idx]
-                    cycle["tool_name"] = action.tool_name
-                    cycle["tool_input"] = action.tool_input
-                    next_idx += 1
-                    # Look for following OBSERVATION
-                    if next_idx < len(self.steps) and self.steps[next_idx].step_type == StepType.OBSERVATION:
-                        obs = self.steps[next_idx]
-                        cycle["tool_output"] = obs.content  # Use content (summary)
-                        next_idx += 1
-                cycles.append(cycle)
-                i = next_idx  # Move past the processed steps
+            elif step.step_type == StepType.ACTION:
+                # Orphaned action: ACTION(s) → OBSERVATION(s) without THOUGHT
+                # This happens when LLM makes tool calls without reasoning text
+                cycle = {
+                    "thought": "",  # No reasoning text for this cycle
+                    "tools": []
+                }
+                next_idx = i  # Start collecting from current ACTION
             else:
+                # Skip orphaned OBSERVATIONs (shouldn't happen in normal flow)
                 i += 1
+                continue
+
+            # Collect ALL consecutive ACTIONs (handles parallel tool calls)
+            actions = []
+            while next_idx < len(self.steps) and self.steps[next_idx].step_type == StepType.ACTION:
+                actions.append(self.steps[next_idx])
+                next_idx += 1
+
+            # Collect ALL consecutive OBSERVATIONs
+            observations = []
+            while next_idx < len(self.steps) and self.steps[next_idx].step_type == StepType.OBSERVATION:
+                observations.append(self.steps[next_idx])
+                next_idx += 1
+
+            # Pair actions with observations (by order)
+            for j, action in enumerate(actions):
+                tool_info = {
+                    "tool_name": action.tool_name,
+                    "tool_input": action.tool_input,
+                    "tool_output": observations[j].content if j < len(observations) else None
+                }
+                cycle["tools"].append(tool_info)
+
+            # Backward compatibility: set first tool as top-level fields
+            if cycle["tools"]:
+                first_tool = cycle["tools"][0]
+                cycle["tool_name"] = first_tool["tool_name"]
+                cycle["tool_input"] = first_tool["tool_input"]
+                cycle["tool_output"] = first_tool["tool_output"]
+
+            cycles.append(cycle)
+            i = next_idx  # Move past the processed steps
         return cycles
 
     def to_dict(self) -> Dict[str, Any]:
