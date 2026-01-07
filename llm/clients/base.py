@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Callable, Optional
 
 from llm.types import LLMResponse, Provider, ToolCall
 from llm.parsers import ParserRegistry, ResponseParser
@@ -35,7 +35,8 @@ class BaseLLMClient(ABC):
         self,
         tool_executor: Optional[ToolExecutor] = None,
         console: Optional[Console] = None,
-        provider: Provider = Provider.BEDROCK
+        provider: Provider = Provider.BEDROCK,
+        on_tool_start: Optional[Callable[[str, dict], None]] = None
     ):
         """Initialize base client.
 
@@ -43,11 +44,17 @@ class BaseLLMClient(ABC):
             tool_executor: Optional tool executor for function calling
             console: Rich console for output
             provider: Provider type (determines parser to use)
+            on_tool_start: Optional callback invoked when a tool starts executing.
+                          Called with (tool_name, tool_input).
         """
         self.provider = provider
         self.parser = ParserRegistry.get_parser(provider)
         self.console = console or Console()
-        self.tool_service = ToolExecutionService(tool_executor, console=self.console)
+        self.tool_service = ToolExecutionService(
+            tool_executor,
+            console=self.console,
+            on_tool_start=on_tool_start
+        )
         self._abort = False
 
     def abort(self) -> None:

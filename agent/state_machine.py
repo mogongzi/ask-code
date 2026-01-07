@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 from enum import Enum
 
+from agent.exploration_tracker import ExplorationTracker
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,14 @@ class ReActState:
     consecutive_no_tool_calls: int = 0
     last_step_had_tool_calls: bool = False
 
+    # Exploration tracking (for "Explored" display)
+    exploration: Optional[ExplorationTracker] = None
+
+    def __post_init__(self):
+        """Initialize exploration tracker after dataclass init."""
+        if self.exploration is None:
+            self.exploration = ExplorationTracker()
+
     def increment_api_turn(self) -> int:
         """Increment and return the API turn count."""
         self.api_turns += 1
@@ -135,19 +144,21 @@ class ReActState:
             return
 
         # ACTION should follow THOUGHT (but we're lenient for now)
+        # Note: action→action is valid for parallel tool calls
         if to_type == StepType.ACTION:
             if from_type not in [StepType.THOUGHT, StepType.OBSERVATION]:
-                logger.warning(
+                logger.debug(
                     f"Unusual transition: {from_type.value} → {to_type.value}. "
                     f"Expected THOUGHT before ACTION."
                 )
             return
 
         # OBSERVATION must follow ACTION
+        # Note: observation→observation is valid for parallel tool calls
         if to_type == StepType.OBSERVATION:
             if from_type != StepType.ACTION:
-                logger.warning(
-                    f"Invalid transition: {from_type.value} → {to_type.value}. "
+                logger.debug(
+                    f"Unusual transition: {from_type.value} → {to_type.value}. "
                     f"OBSERVATION must follow ACTION."
                 )
             return
@@ -387,6 +398,7 @@ class ReActState:
             "should_stop": self.should_stop,
             "stop_reason": self.stop_reason,
             "consecutive_no_tool_calls": self.consecutive_no_tool_calls,
+            "exploration_items": len(self.exploration) if self.exploration else 0,
         }
 
 
@@ -401,6 +413,12 @@ class ReActStateMachine:
         """Reset the state machine to initial state."""
         self.state = ReActState()
         logger.debug("ReAct state machine reset")
+
+    def clear_exploration(self) -> None:
+        """Clear only the exploration tracker, keeping other state."""
+        if self.state.exploration:
+            self.state.exploration.clear()
+        logger.debug("Exploration tracker cleared")
 
     def get_state(self) -> ReActState:
         """Get the current state."""

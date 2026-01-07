@@ -24,7 +24,10 @@ from llm.clients import StreamingClient, BlockingClient
 from agent.react_rails_agent import ReactRailsAgent
 from agent.config import AgentConfig
 from agent.logging import AgentLogger
+from agent.reasoning_display import format_complete_reasoning_section
+from agent.llm_client import MarkdownStyled
 from agent_tool_executor import AgentToolExecutor
+from render.explored_display import ExploredDisplay
 
 # Configuration
 # Default fallback; overridden per provider below when available
@@ -218,7 +221,7 @@ def repl(
             llm_tracking=llm_tracking,
         )
 
-        react_agent = ReactRailsAgent(config=config, session=session)
+        react_agent = ReactRailsAgent(config=config, session=session, console=console)
         console.print(f"[green]✓ Rails Agent initialized[/green]: {project_root}")
 
         # Log initialization in verbose mode
@@ -245,16 +248,51 @@ def repl(
             console.print(f"[dim]{traceback.format_exc()}[/dim]")
         return 1
 
-    # Wire tool executor
+    # Wire tool executor with live Explored display callback
+    explored_display = ExploredDisplay(console)
+    exploration_tracker = react_agent.state_machine.state.exploration
+
+    def _record_exploration_and_update(tool_name: str, tool_input: dict) -> None:
+        """Callback to record exploration and update live display."""
+        from agent.exploration_tracker import ExploredType
+
+        # Classify tool and record to tracker
+        if tool_name in ["ripgrep", "grep", "search", "enhanced_sql_rails_search"]:
+            pattern = tool_input.get("pattern", tool_input.get("sql", tool_input.get("query", "")))
+            path = tool_input.get("path", ".")
+            exploration_tracker.add_search(pattern, path)
+        elif tool_name in ["file_reader", "read_file", "model_analyzer", "controller_analyzer"]:
+            file_path = tool_input.get("file_path", tool_input.get("model_name", tool_input.get("controller_name", "")))
+            filename = file_path.split("/")[-1] if "/" in str(file_path) else str(file_path)
+            exploration_tracker.add_read([filename])
+        elif tool_name in ["list_directory", "ls", "directory"]:
+            path = tool_input.get("path", ".")
+            exploration_tracker.add_list(path)
+        else:
+            # Default: treat unknown tools as search
+            exploration_tracker.add_search(tool_name, ".")
+
+        # Start Live lazily to avoid colliding with other Live spinners (e.g. request spinner).
+        if explored_display.live is None:
+            explored_display.start_live(exploration_tracker)
+
+        # Update live display with fade-in
+        explored_display.add_item_with_fade(exploration_tracker)
+
     try:
         available_tools = react_agent.tool_registry.get_available_tools()
         agent_executor = AgentToolExecutor(available_tools)
-        # Recreate client with tool executor
+        # Recreate client with tool executor and exploration callback
         if use_streaming:
-            session.streaming_client = StreamingClient(tool_executor=agent_executor)
+            session.streaming_client = StreamingClient(
+                tool_executor=agent_executor,
+                on_tool_start=_record_exploration_and_update
+            )
         else:
             session.streaming_client = BlockingClient(
-                tool_executor=agent_executor, console=console
+                tool_executor=agent_executor,
+                console=console,
+                on_tool_start=_record_exploration_and_update
             )
         if verbose:
             console.print(
@@ -308,6 +346,9 @@ def repl(
                 if hasattr(react_agent, "conversation"):
                     react_agent.conversation.clear_history()
 
+                # Clear exploration tracker
+                exploration_tracker.clear()
+
                 usage.reset()
                 console.print("[green]✓ Conversation and agent state cleared[/green]")
                 continue
@@ -353,15 +394,40 @@ def repl(
         if user_input and isinstance(user_input, str):
             user_history.append(user_input)
 
-        # Process through ReAct agent
+        # Process through ReAct agent with live Explored display
         try:
-            console.print(f"\n[dim]{mode_indicator} Agent analyzing...[/dim]")
+            # Clear previous exploration and start fresh
+            exploration_tracker.clear()
+            exploration_tracker.start()
 
             # Set thinking mode context if enabled
             if thinking_mode:
                 AgentLogger.set_context(thinking_mode=True)
 
-            response = react_agent.process_message(user_input)
+            try:
+                response = react_agent.process_message(user_input)
+            finally:
+                # Mark exploration as complete (changes header to "• Explored")
+                exploration_tracker.stop()
+
+                # Update live display to show final "• Explored" state before stopping
+                explored_display.update_live(exploration_tracker)
+
+                # Stop live display (content persists on screen in final state)
+                explored_display.stop_live()
+
+            # Render final answer after the Explored section.
+            if response and response.strip():
+                if exploration_tracker.items:
+                    console.print()
+                console.print(MarkdownStyled(response.strip()))
+
+            # Display ReAct Trace (after answer) if llm_tracking is enabled
+            if react_agent.config.llm_tracking:
+                cycles = react_agent.get_reasoning_cycles()
+                if cycles:
+                    format_complete_reasoning_section(cycles, console)
+
             console.print()  # Add spacing
 
             # Show usage and session info (only in verbose mode)

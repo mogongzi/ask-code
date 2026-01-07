@@ -147,10 +147,6 @@ class LLMClient:
             provider_name=getattr(self.session, "provider_name", "bedrock"),
         )
 
-        # Display the response with Rich markdown formatting
-        if result.text:
-            self.console.print(MarkdownStyled(result.text.strip()))
-
         # Track usage if available
         if hasattr(self.session, "usage_tracker") and self.session.usage_tracker:
             if result.tokens > 0 or result.cost > 0:

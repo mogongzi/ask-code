@@ -8,13 +8,12 @@ This eliminates duplication between streaming and blocking clients.
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from llm.types import ToolCall
 from llm.parsers.base import ResponseParser
 from tools.executor import ToolExecutor
 from rich.console import Console
-from llm.ui.spinner import SpinnerManager
 
 logger = logging.getLogger(__name__)
 
@@ -30,18 +29,24 @@ class ToolExecutionService:
     This eliminates ~30 lines of duplicated code between streaming and blocking clients.
     """
 
-    def __init__(self, tool_executor: Optional[ToolExecutor] = None, console: Optional[Console] = None):
+    def __init__(
+        self,
+        tool_executor: Optional[ToolExecutor] = None,
+        console: Optional[Console] = None,
+        on_tool_start: Optional[Callable[[str, dict], None]] = None
+    ):
         """Initialize tool execution service.
 
         Args:
             tool_executor: ToolExecutor instance for running tools.
                           If None, no tools will be executed.
             console: Rich console for UI output during tool execution.
+            on_tool_start: Optional callback invoked when a tool starts executing.
+                          Called with (tool_name, tool_input).
         """
         self.tool_executor = tool_executor
         self.console = console or Console()
-        console_supports_spinner = getattr(self.console, "is_terminal", False)
-        self.spinner = SpinnerManager(console=self.console) if console_supports_spinner else None
+        self._on_tool_start = on_tool_start
 
     def extract_and_execute(
         self,
@@ -97,24 +102,18 @@ class ToolExecutionService:
 
         logger.debug(f"Executing tool: {tool_name} with input: {tool_input}")
 
-        # Display "Using tool..." message BEFORE execution starts
-        self.console.print(f"[yellow]⚙ Using {tool_name} tool...[/yellow]")
-
-        post_messages = []
-        tool_call: Optional[ToolCall] = None
-        spinner_started = False
-
-        if self.spinner and not self.spinner.is_active():
+        # Notify callback for live Explored display
+        if self._on_tool_start:
             try:
-                self.spinner.start(f"Running {tool_name}...")
-                spinner_started = True
-            except Exception:
-                # Spinner is best-effort; ignore failures and fall back to text output.
-                spinner_started = False
+                self._on_tool_start(tool_name, tool_input)
+            except Exception as e:
+                logger.debug(f"on_tool_start callback error: {e}")
+
+        tool_call: Optional[ToolCall] = None
 
         try:
-            # Execute the tool, passing spinner for debug logging coordination
-            result_data = self.tool_executor.execute_tool(tool_name, tool_input, spinner=self.spinner)
+            # Execute the tool
+            result_data = self.tool_executor.execute_tool(tool_name, tool_input)
 
             # Extract result content (full version for LLM)
             result_content = result_data.get('content', '')
@@ -125,11 +124,6 @@ class ToolExecutionService:
                 logger.warning(f"Tool {tool_name} returned error: {result_data['error']}")
                 result_content = f"Error: {result_data['error']}"
                 display_content = result_content  # Same for errors
-                post_messages.append(("red", f"✗ {display_content}"))
-            else:
-                # Display success with compact result
-                if display_content:
-                    post_messages.append(("green", f"✓ {display_content}"))
 
             # Create ToolCall object with both full and display results
             tool_call = ToolCall(
@@ -144,7 +138,6 @@ class ToolExecutionService:
             logger.error(f"Failed to execute tool {tool_name}: {e}", exc_info=True)
             # Return ToolCall with error message as result
             error_msg = f"Tool execution failed: {str(e)}"
-            post_messages.append(("red", f"✗ {error_msg}"))
             tool_call = ToolCall(
                 id=tool_id,
                 name=tool_name,
@@ -152,15 +145,6 @@ class ToolExecutionService:
                 result=error_msg,
                 display_result=error_msg  # Same for errors
             )
-        finally:
-            if spinner_started and self.spinner:
-                try:
-                    self.spinner.stop()
-                except Exception:
-                    pass
-
-        for style, message in post_messages:
-            self.console.print(f"[{style}]{message}[/{style}]")
 
         return tool_call
 

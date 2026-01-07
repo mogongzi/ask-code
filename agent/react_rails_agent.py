@@ -23,7 +23,7 @@ from agent.exceptions import (
     ReActLoopError,
 )
 from agent.logging import AgentLogger, log_agent_start, log_agent_complete
-from agent.reasoning_display import format_complete_reasoning_section
+from agent.exploration_tracker import ExploredType
 from prompts.system_prompt import RAILS_REACT_SYSTEM_PROMPT
 from chat.conversation import ConversationManager
 
@@ -36,16 +36,22 @@ class ReactRailsAgent:
     with proper error handling, logging, and modular components.
     """
 
-    def __init__(self, config: Optional[AgentConfig] = None, session=None):
+    def __init__(
+        self,
+        config: Optional[AgentConfig] = None,
+        session=None,
+        console: Optional[Console] = None,
+    ):
         """
         Initialize the Rails agent.
 
         Args:
             config: Agent configuration
             session: ChatSession for LLM communication
+            console: Rich console for all output (ensures Live rendering works)
         """
         self.config = config or AgentConfig.create_default()
-        self.console = Console()
+        self.console = console or Console()
         self.logger = AgentLogger.get_logger(
             level=self.config.log_level, console=self.console
         )
@@ -160,6 +166,10 @@ class ReactRailsAgent:
             {"role": "system", "content": RAILS_REACT_SYSTEM_PROMPT}
         ] + self.conversation.get_sanitized_history()
 
+        # Start exploration tracking
+        if self.state_machine.state.exploration:
+            self.state_machine.state.exploration.start()
+
         while self.state_machine.should_continue(self.config.max_react_steps):
             try:
                 step_num = self.state_machine.state.current_step + 1
@@ -205,16 +215,21 @@ class ReactRailsAgent:
                 self.logger.warning(f"Stopping ReAct loop due to exception: {type(e).__name__}")
                 break
 
+        # Stop exploration tracking
+        if self.state_machine.state.exploration:
+            self.state_machine.state.exploration.stop()
+
         # Generate final response
         final_response = self._generate_final_response()
 
-        # Display reasoning trail if enabled
-        if self.config.llm_tracking:
-            cycles = self.state_machine.state.get_complete_reasoning_trail()
-            if cycles:
-                format_complete_reasoning_section(cycles, self.console)
+        # Note: ReAct Trace display is now handled by the caller (ride_rails.py)
+        # after the Explored section, using get_reasoning_cycles()
 
         return final_response
+
+    def get_reasoning_cycles(self) -> List[Dict[str, Any]]:
+        """Get the complete reasoning trail cycles for display."""
+        return self.state_machine.state.get_complete_reasoning_trail()
 
     def _call_llm_with_tools(self, messages: List[Dict[str, Any]]) -> Any:
         """
@@ -279,6 +294,8 @@ class ReactRailsAgent:
                     self._append_to_last_user_message(messages, context_prompt)
 
             # Record all ACTIONs first (for proper parallel tool call grouping)
+            # Note: Exploration recording is now handled via on_tool_start callback
+            # in ride_rails.py for live display updates
             for tool_call in llm_response.tool_calls:
                 tool_name = tool_call.name
                 tool_input = tool_call.input
@@ -609,6 +626,53 @@ class ReactRailsAgent:
             "No project root configured",
         ]
         return any(pattern in error_msg for pattern in critical_patterns)
+
+    def _record_exploration_from_tool(
+        self, tool_name: str, tool_input: Dict[str, Any]
+    ) -> None:
+        """
+        Record exploration activity based on tool execution.
+
+        Maps tool calls to exploration types (Search, Read, List) for
+        the "Explored" display feature.
+
+        Args:
+            tool_name: Name of the tool that was executed
+            tool_input: Input parameters passed to the tool
+        """
+        exploration = self.state_machine.state.exploration
+        if exploration is None:
+            self.logger.debug(f"No exploration tracker available for tool: {tool_name}")
+            return
+
+        # Handle None or non-dict inputs
+        if tool_input is None:
+            tool_input = {}
+        elif not isinstance(tool_input, dict):
+            tool_input = {}
+
+        # Normalize tool name for matching
+        tool_lower = tool_name.lower()
+
+        # Search tools
+        if any(s in tool_lower for s in ["ripgrep", "grep", "search", "sql"]):
+            pattern = tool_input.get("pattern", tool_input.get("query", ""))
+            path = tool_input.get("path", tool_input.get("scope", "."))
+            if pattern:
+                exploration.add_search(pattern, str(path) if path else ".")
+
+        # Read tools
+        elif any(s in tool_lower for s in ["file_reader", "read", "model_analyzer", "controller_analyzer"]):
+            file_path = tool_input.get("file_path", tool_input.get("path", ""))
+            if file_path:
+                # Extract just the filename from the path
+                file_name = str(file_path).split("/")[-1]
+                exploration.add_read([file_name], str(file_path))
+
+        # List tools
+        elif any(s in tool_lower for s in ["list", "ls", "directory"]):
+            path = tool_input.get("path", tool_input.get("directory", "."))
+            exploration.add_list(str(path) if path else ".")
 
     def set_project_root(self, project_root: str) -> None:
         """

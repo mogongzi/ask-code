@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import sys
 import logging
-from typing import Optional, Iterator, Dict
+from typing import Callable, Optional, Iterator, Dict
 from dataclasses import dataclass
 import requests
 from requests.exceptions import RequestException, ReadTimeout, ConnectTimeout
@@ -56,7 +56,8 @@ class StreamingClient(BaseLLMClient):
         tool_executor: Optional[ToolExecutor] = None,
         console: Optional[Console] = None,
         provider: Provider = Provider.BEDROCK,
-        timeout: float = 60.0
+        timeout: float = 60.0,
+        on_tool_start: Optional[Callable[[str, dict], None]] = None
     ):
         """Initialize streaming client.
 
@@ -65,9 +66,12 @@ class StreamingClient(BaseLLMClient):
             console: Rich console for output
             provider: Provider type (determines parser)
             timeout: Default request timeout in seconds
+            on_tool_start: Optional callback invoked when a tool starts executing.
+                          Called with (tool_name, tool_input).
         """
-        super().__init__(tool_executor, console, provider)
+        super().__init__(tool_executor, console, provider, on_tool_start)
         self.timeout = timeout
+        self._on_tool_start = on_tool_start
 
     def _make_request(
         self,
@@ -385,10 +389,8 @@ class StreamingClient(BaseLLMClient):
                                 tool_input_buffer = ""
                                 # Ensure any pending text is rendered
                                 ms.update("".join(text_buffer), final=False)
-                                # Show tool message
-                                output_console.print(f"[yellow]⚙ Using {current_tool.get('name')} tool...[/yellow]")
                             except json.JSONDecodeError:
-                                output_console.print("[red]Error: Invalid tool start format[/red]")
+                                logger.warning("Invalid tool start format")
 
                     elif event.kind == "tool_input_delta":
                         if event.value:
@@ -401,15 +403,18 @@ class StreamingClient(BaseLLMClient):
                                 tool_name = current_tool.get("name")
                                 tool_id = current_tool.get("id")
 
+                                # Notify callback for live Explored display
+                                if self._on_tool_start:
+                                    try:
+                                        self._on_tool_start(tool_name, tool_input)
+                                    except Exception as e:
+                                        logger.debug(f"on_tool_start callback error: {e}")
+
                                 # Execute the tool
                                 result_data = self.tool_executor.execute_tool(tool_name, tool_input)
 
-                                # Display tool result (use compact version for UI)
+                                # Get display text for conversation context
                                 display_text = result_data.get('display', result_data.get('content', ''))
-                                if "error" in result_data:
-                                    output_console.print(f"[red]Tool error: {result_data['error']}[/red]")
-                                else:
-                                    output_console.print(f"[green]✓ {display_text}[/green]")
 
                                 # Store tool call data (full version for conversation)
                                 tool_calls_made.append({
@@ -423,7 +428,7 @@ class StreamingClient(BaseLLMClient):
                                 })
 
                             except json.JSONDecodeError:
-                                output_console.print("[red]Error: Invalid tool input JSON[/red]")
+                                logger.warning("Invalid tool input JSON")
                             finally:
                                 current_tool = None
                                 tool_input_buffer = ""

@@ -8,7 +8,7 @@ Refactored to use new infrastructure, reducing code by ~60%.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 import requests
 from requests.exceptions import RequestException, ReadTimeout, ConnectTimeout
 
@@ -43,6 +43,7 @@ class BlockingClient(BaseLLMClient):
         console: Optional[Console] = None,
         provider: Provider = Provider.BEDROCK,
         timeout: float = 120.0,
+        on_tool_start: Optional[Callable[[str, dict], None]] = None,
     ):
         """Initialize blocking client.
 
@@ -51,8 +52,10 @@ class BlockingClient(BaseLLMClient):
             console: Rich console for output (used by spinner)
             provider: Provider type (determines parser)
             timeout: Default request timeout in seconds
+            on_tool_start: Optional callback invoked when a tool starts executing.
+                          Called with (tool_name, tool_input).
         """
-        super().__init__(tool_executor, console, provider)
+        super().__init__(tool_executor, console, provider, on_tool_start)
         self.timeout = timeout
         self.spinner = SpinnerManager(console=self.console)
 
