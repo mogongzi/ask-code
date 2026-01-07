@@ -15,16 +15,14 @@ Example output:
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from rich.console import Console, Group
 from rich.live import Live
 from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
-
-if TYPE_CHECKING:
-    from agent.exploration_tracker import ExplorationTracker, ExploredItem, ExploredType
+from agent.exploration_tracker import ExplorationTracker, ExploredItem
 
 
 # Tree structure prefixes
@@ -145,7 +143,7 @@ class ExploredDisplay:
             header_table.add_column(width=2)  # spinner column
             header_table.add_column()         # text column
             header_table.add_row(
-                Spinner("arc", style="yellow"),
+                Spinner("toggle9", style="yellow"),
                 Text("Exploring", style="bold")
             )
             elements.append(header_table)
