@@ -19,6 +19,7 @@ from util.command_helpers import handle_special_commands
 from util.input_helpers import should_exit_from_input
 from chat.session import ChatSession
 from llm.clients import StreamingClient, BlockingClient
+from llm.types import Provider
 
 # Import agent components
 from agent.react_rails_agent import ReactRailsAgent
@@ -38,21 +39,23 @@ console = Console()
 
 
 def create_streaming_client(
-    use_streaming: bool = False, console: Optional[Console] = None
+    use_streaming: bool = False, console: Optional[Console] = None, provider_name: str = "bedrock"
 ):
     """Create and return streaming or blocking client.
 
     Args:
         use_streaming: If True, use StreamingClient (SSE). If False, use BlockingClient (single request).
         console: Rich console for output (used by BlockingClient for spinner)
+        provider_name: Provider name string ("bedrock" or "azure")
 
     Returns:
         StreamingClient or BlockingClient instance
     """
+    provider = Provider.from_string(provider_name)
     if use_streaming:
-        return StreamingClient()
+        return StreamingClient(provider=provider)
     else:
-        return BlockingClient(console=console)
+        return BlockingClient(console=console, provider=provider)
 
 
 def get_agent_input(
@@ -188,8 +191,8 @@ def repl(
         provider.__name__.split(".")[-1] if hasattr(provider, "__name__") else "bedrock"
     )
 
-    # Create client (streaming or blocking)
-    client = create_streaming_client(use_streaming=use_streaming, console=console)
+    # Create client (streaming or blocking) with correct provider
+    client = create_streaming_client(use_streaming=use_streaming, console=console, provider_name=provider_name)
     if verbose:
         client_type = "streaming (SSE)" if use_streaming else "blocking (single request)"
         console.print(f"[dim]Using {client_type} client (context {usage_max_context} tokens)[/dim]")
@@ -282,17 +285,20 @@ def repl(
     try:
         available_tools = react_agent.tool_registry.get_available_tools()
         agent_executor = AgentToolExecutor(available_tools)
-        # Recreate client with tool executor and exploration callback
+        # Recreate client with tool executor, exploration callback, and correct provider
+        llm_provider = Provider.from_string(provider_name)
         if use_streaming:
             session.streaming_client = StreamingClient(
                 tool_executor=agent_executor,
-                on_tool_start=_record_exploration_and_update
+                on_tool_start=_record_exploration_and_update,
+                provider=llm_provider
             )
         else:
             session.streaming_client = BlockingClient(
                 tool_executor=agent_executor,
                 console=console,
-                on_tool_start=_record_exploration_and_update
+                on_tool_start=_record_exploration_and_update,
+                provider=llm_provider
             )
         if verbose:
             console.print(

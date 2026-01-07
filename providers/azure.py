@@ -10,6 +10,36 @@ Event = Tuple[str, Optional[str]]  # ("model"|"text"|"tool_start"|"tool_input_de
 # Exposed so the CLI can size its usage indicator appropriately.
 context_length: int = 272_000
 
+# Azure OpenAI does not expose prompt caching controls (handled internally by Azure)
+supports_prompt_caching: bool = False
+supports_message_cache_control: bool = False
+
+# GPT-specific formatting instructions (appended to system prompt)
+# GPT models need explicit instructions to use markdown code blocks consistently
+GPT_FORMATTING_SUFFIX = """
+
+# Response Formatting (IMPORTANT)
+
+ALWAYS use proper Markdown formatting in your responses:
+
+1. **Code blocks**: ALWAYS wrap code in fenced code blocks with language identifier:
+   ```ruby
+   def example_method
+     # Ruby code here
+   end
+   ```
+   ```sql
+   SELECT * FROM users WHERE id = 1
+   ```
+
+2. **Inline code**: Use backticks for short references like `User.find(id)` or `app/models/user.rb`
+
+3. **File paths**: Always format as `path/to/file.rb:123` (with line number when known)
+
+4. **Lists**: Use bullet points or numbered lists for multiple items
+
+Never output raw code without markdown fencing."""
+
 def _build_openai_tools(tools: List[dict]) -> List[dict]:
     """Build OpenAI tools array from tool definitions.
 
@@ -104,19 +134,20 @@ def _build_openai_messages(messages: List[dict]) -> List[dict]:
     return openai_messages
 
 def build_payload(
-    messages: List[dict], *, model: Optional[str] = None, max_tokens: Optional[int] = None, temperature: Optional[float] = None, thinking: bool = False, tools: Optional[List[dict]] = None, context_content: Optional[str] = None, system_prompt: Optional[Union[str, List[dict]]] = None, **_: dict
+    messages: List[dict], *, model: Optional[str] = None, max_tokens: Optional[int] = None, temperature: Optional[float] = None, thinking: bool = False, tools: Optional[List[dict]] = None, context_content: Optional[str] = None, system_prompt: Optional[Union[str, List[dict]]] = None, stream: bool = False, **_: dict
 ) -> dict:
-    """Construct an Azure/OpenAI Chat Completions streaming payload.
-
-    Requires `model`. Includes `stream: true`.
+    """Construct an Azure/OpenAI Chat Completions payload.
 
     Args:
         messages: List of conversation messages (any format)
-        model: Model name (e.g., "gpt-4o")
+        model: Model name (e.g., "gpt-4o") - optional if proxy handles routing
         max_tokens: Maximum completion tokens
         temperature: Sampling temperature
         thinking: Enable reasoning mode (adds reasoning_effort and verbosity params)
         tools: List of tool definitions (abstract format)
+        context_content: Optional context to prepend to first user message
+        system_prompt: System prompt (string or block list)
+        stream: Enable SSE streaming (default: False for blocking mode)
 
     Returns:
         OpenAI-compatible request payload
@@ -146,10 +177,11 @@ def build_payload(
 
     system_content = _stringify_system_prompt(system_prompt)
     if system_content:
-        final_messages.insert(0, {"role": "system", "content": system_content})
+        # Append GPT-specific formatting instructions to ensure proper markdown output
+        final_messages.insert(0, {"role": "system", "content": system_content + GPT_FORMATTING_SUFFIX})
     elif not openai_messages or openai_messages[0].get("role") != "system":
-        # Fallback minimal system guidance
-        final_messages.insert(0, {"role": "system", "content": "Use Markdown formatting when appropriate."})
+        # Fallback with GPT formatting guidance
+        final_messages.insert(0, {"role": "system", "content": GPT_FORMATTING_SUFFIX.strip()})
 
     # Optionally inject context by prepending to the first user message content
     if context_content and context_content.strip():
@@ -176,12 +208,12 @@ def build_payload(
             else:
                 final_messages.insert(0, {"role": "user", "content": context_content})
 
-    body: Dict = {
-        "stream": True,
-        "stream_options": {
-            "include_usage": True
-        }
-    }
+    body: Dict = {}
+
+    # Only include streaming config when stream=True
+    if stream:
+        body["stream"] = True
+        body["stream_options"] = {"include_usage": True}
 
     # Add reasoning parameters only when thinking mode is enabled
     if thinking:
