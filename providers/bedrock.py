@@ -9,8 +9,8 @@ Event = Tuple[str, Optional[str]]  # ("model"|"text"|"thinking"|"tool_start"|"to
 
 # Bedrock Anthropic now supports prompt caching via cache_control metadata.
 supports_prompt_caching = True
-# Message-level cache_control is not yet supported; only system blocks.
-supports_message_cache_control = False
+# Message-level cache_control is now supported for last-two-user-messages caching.
+supports_message_cache_control = True
 
 # Approximate maximum context window for common Bedrock Anthropic models.
 # Claude 4 Sonnet supports ~200k tokens context.
@@ -19,21 +19,34 @@ context_length: int = 200_000
 
 
 def _format_system_prompt(system_prompt: Optional[Union[str, List[dict]]]) -> Optional[List[dict]]:
-    """Format system prompt into Anthropic block structure with cache metadata."""
+    """Format system prompt into Anthropic block structure with cache metadata.
+
+    Strategy: Put cache breakpoint on the LAST system block only (not all blocks).
+    This ensures system prompt meets minimum token requirements (usually 1024+)
+    while using only 1 breakpoint for the entire static prefix.
+
+    If tools are also provided, the system breakpoint takes precedence;
+    tools don't need their own breakpoint (they're cached with system).
+    """
     if system_prompt is None:
         return None
 
-    # When the prompt is already block-structured, ensure cache metadata exists.
+    # When the prompt is already block-structured, strip existing cache_control
+    # and add only to the last block.
     if isinstance(system_prompt, list):
         formatted_blocks: List[dict] = []
         for block in system_prompt:
             if not isinstance(block, dict):
                 continue
             prepared_block = copy.deepcopy(block)
-            cache_control = dict(prepared_block.get("cache_control") or {})
-            cache_control.setdefault("type", "ephemeral")
-            prepared_block["cache_control"] = cache_control
+            # Remove any existing cache_control - we'll add only to the last block
+            prepared_block.pop("cache_control", None)
             formatted_blocks.append(prepared_block)
+
+        # Add cache_control only to the LAST block
+        if formatted_blocks:
+            formatted_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+
         return formatted_blocks or None
 
     if not isinstance(system_prompt, str):
@@ -54,7 +67,7 @@ def _format_system_prompt(system_prompt: Optional[Union[str, List[dict]]]) -> Op
         blocks.append({
             "type": "text",
             "text": instructions_text,
-            "cache_control": {"type": "ephemeral"}
+            # NO cache_control here - only on the last block
         })
 
     tool_text = tool_text.strip()
@@ -62,15 +75,18 @@ def _format_system_prompt(system_prompt: Optional[Union[str, List[dict]]]) -> Op
         blocks.append({
             "type": "text",
             "text": tool_text,
-            "cache_control": {"type": "ephemeral"}
+            # NO cache_control here - only on the last block
         })
 
     if not blocks:
         blocks.append({
             "type": "text",
             "text": system_prompt.strip(),
-            "cache_control": {"type": "ephemeral"}
         })
+
+    # Add cache_control only to the LAST block
+    if blocks:
+        blocks[-1]["cache_control"] = {"type": "ephemeral"}
 
     return blocks
 
@@ -94,13 +110,23 @@ def build_payload(
     }
 
     # Anthropic-style API supports top-level 'system' for instructions
+    # Track whether system has a cache breakpoint for tool fallback logic
+    system_has_cache = False
     if system_prompt:
         formatted_system = _format_system_prompt(system_prompt)
         if formatted_system:
             payload["system"] = formatted_system
+            system_has_cache = True  # _format_system_prompt adds cache to last block
 
+    # Cache strategy for static prefix:
+    # 1. If system prompt exists: it has the cache breakpoint (from _format_system_prompt)
+    # 2. If no system but tools exist: add cache to last tool (fallback)
+    # 3. Never cache both system AND tools (wastes breakpoints)
     if tools:
-        tools[-1]["cache_control"] = {"type": "ephemeral"}
+        if not system_has_cache:
+            # No system prompt - use last tool as static cache point
+            tools[-1]["cache_control"] = {"type": "ephemeral"}
+        # else: system has the breakpoint, tools don't need one
         payload["tools"] = tools
 
     # Messages should come after system prompt and tool definitions
@@ -214,15 +240,37 @@ def map_events(lines: Iterator[str]) -> Iterator[Event]:
             if usage:
                 input_tokens = usage.get("inputTokenCount", 0) or usage.get("input_tokens", 0)
                 output_tokens = usage.get("outputTokenCount", 0) or usage.get("output_tokens", 0)
-                total_tokens = input_tokens + output_tokens
-                if total_tokens > 0:
-                    # Calculate cost (Claude 4 Sonnet pricing: $2.04/1K input, $9.88/1K output)
-                    input_cost = (input_tokens / 1000) * 0.00204
-                    output_cost = (output_tokens / 1000) * 0.00988
-                    total_cost = input_cost + output_cost
 
-                    # Format: "tokens|input_tokens|output_tokens|cost"
-                    token_info = f"{total_tokens}|{input_tokens}|{output_tokens}|{total_cost:.6f}"
+                # Extract cache metrics from usage
+                cache_creation = (
+                    usage.get("cache_creation_input_tokens") or
+                    usage.get("cacheCreationInputTokenCount", 0)
+                )
+                cache_read = (
+                    usage.get("cache_read_input_tokens") or
+                    usage.get("cacheReadInputTokenCount", 0)
+                )
+
+                # Total tokens for context tracking includes cache read tokens
+                total_tokens = input_tokens + output_tokens + cache_read
+
+                if total_tokens > 0 or cache_read > 0 or cache_creation > 0:
+                    # Calculate cost with cache-specific pricing
+                    # Claude 4 Sonnet pricing: $3/MTok input, $15/MTok output
+                    # Cache write: 1.25x input, Cache read: 0.1x input
+                    INPUT_RATE = 0.003
+                    OUTPUT_RATE = 0.015
+                    CACHE_WRITE_RATE = 0.00375
+                    CACHE_READ_RATE = 0.0003
+
+                    input_cost = (input_tokens / 1000) * INPUT_RATE
+                    output_cost = (output_tokens / 1000) * OUTPUT_RATE
+                    cache_write_cost = (cache_creation / 1000) * CACHE_WRITE_RATE
+                    cache_read_cost = (cache_read / 1000) * CACHE_READ_RATE
+                    total_cost = input_cost + output_cost + cache_write_cost + cache_read_cost
+
+                    # Extended format: "total|input|output|cost|cache_creation|cache_read"
+                    token_info = f"{total_tokens}|{input_tokens}|{output_tokens}|{total_cost:.6f}|{cache_creation}|{cache_read}"
                     yield ("tokens", token_info)
             yield ("done", None)
             break

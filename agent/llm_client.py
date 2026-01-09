@@ -147,10 +147,15 @@ class LLMClient:
             provider_name=getattr(self.session, "provider_name", "bedrock"),
         )
 
-        # Track usage if available
+        # Track usage if available (including cache metrics)
         if hasattr(self.session, "usage_tracker") and self.session.usage_tracker:
             if result.tokens > 0 or result.cost > 0:
-                self.session.usage_tracker.update(result.tokens, result.cost)
+                self.session.usage_tracker.update(
+                    result.tokens,
+                    result.cost,
+                    cache_creation=getattr(result, 'cache_creation_tokens', 0),
+                    cache_read=getattr(result, 'cache_read_tokens', 0)
+                )
 
         # Process tool calls and results
         # Note: Tool execution messages are now displayed by ToolExecutionService
@@ -205,18 +210,101 @@ class LLMClient:
         return False
 
     def _apply_prompt_caching(self, messages: List[Dict[str, Any]]) -> None:
-        """Mark older conversation context as cacheable for Anthropic."""
-        if len(messages) <= 4:
+        """Apply Cline-style prompt caching - mark last two user messages.
+
+        This implements the "last two user messages" strategy:
+        - Turn 1 (1 user msg): Mark U1 -> writes cache for turn 2
+        - Turn 2+ (2+ user msgs): Mark last two -> read from previous, write for next
+
+        CONSTRAINTS:
+        - Maximum 4 breakpoints per request (system + tools use 1, leaves 2-3 for messages)
+        - cache_control can ONLY be on text content blocks
+        - Tool_result-only messages get an empty text block appended for cache marker
+        """
+        # Find user messages that can receive cache_control
+        user_indices = self._find_cacheable_user_messages(messages)
+
+        if not user_indices:
+            return  # No cacheable messages at all
+
+        # Turn 1: Mark single user message (creates cache for turn 2)
+        # Turn 2+: Mark last two user messages (read from previous + write for next)
+        indices_to_mark = user_indices[-2:] if len(user_indices) >= 2 else user_indices[-1:]
+
+        for idx in indices_to_mark:
+            self._add_cache_control_to_message(messages[idx])
+
+    def _find_cacheable_user_messages(self, messages: List[Dict[str, Any]]) -> List[int]:
+        """Find indices of user messages that can receive cache_control.
+
+        For tool_result-only messages, appends an empty text block to make them cacheable.
+        """
+        indices = []
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "user":
+                continue
+            if self._ensure_cacheable_text_block(msg):
+                indices.append(i)
+        return indices
+
+    def _ensure_cacheable_text_block(self, message: Dict[str, Any]) -> bool:
+        """Ensure message has a text block for cache_control. Returns True if cacheable.
+
+        For tool_result-only messages, append an empty text block.
+        Per Anthropic docs: tool_result blocks must come first, text can follow.
+        """
+        content = message.get("content")
+        if content is None:
+            return False
+
+        if isinstance(content, str):
+            return bool(content.strip())  # String content is always cacheable
+
+        if isinstance(content, list):
+            # Check if any text block exists
+            has_text = any(
+                isinstance(block, dict) and block.get("type") == "text"
+                for block in content
+            )
+
+            if not has_text:
+                # No text block - add placeholder for cache_control
+                # This is safe: tool_result blocks come first, text follows
+                # Use "." instead of "" (API rejects empty text blocks)
+                content.append({
+                    "type": "text",
+                    "text": "."  # Minimal non-empty placeholder for cache marker
+                })
+            return True
+
+        return False
+
+    def _add_cache_control_to_message(self, message: Dict[str, Any]) -> None:
+        """Add cache_control to the last TEXT content block of a message.
+
+        IMPORTANT: Per Anthropic docs, cache_control can ONLY be on text content blocks.
+        - Skip tool_result blocks (user messages after tool execution)
+        - Skip tool_use blocks (assistant messages with tool calls)
+        """
+        content = message.get("content")
+        if content is None:
             return
 
-        cache_index = len(messages) - 4
-        if cache_index < 0 or cache_index >= len(messages):
-            return
-
-        target_message = messages[cache_index]
-        cache_control = dict(target_message.get("cache_control") or {})
-        cache_control["type"] = "ephemeral"
-        target_message["cache_control"] = cache_control
+        if isinstance(content, str):
+            # String content is always text - convert to block format with cache_control
+            message["content"] = [{
+                "type": "text",
+                "text": content,
+                "cache_control": {"type": "ephemeral"}
+            }]
+        elif isinstance(content, list) and content:
+            # Find the last TEXT block (skip tool_result, tool_use, thinking, etc.)
+            for i in range(len(content) - 1, -1, -1):
+                block = content[i]
+                if isinstance(block, dict) and block.get("type") == "text":
+                    block["cache_control"] = {"type": "ephemeral"}
+                    return  # Found and marked, done
+            # No text block found - this shouldn't happen after _ensure_cacheable_text_block
 
     def _strip_prompt_caching_metadata(self, messages: List[Dict[str, Any]]) -> None:
         for message in messages:

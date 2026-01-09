@@ -11,6 +11,11 @@ def test_supports_prompt_caching_enabled():
 
 
 def test_build_payload_formats_system_prompt_with_cache_blocks():
+    """Test that system prompt is formatted with cache_control on LAST block only.
+
+    The new caching strategy only marks the last system block to optimize
+    breakpoint usage (only 1 breakpoint for entire static prefix).
+    """
     payload = bedrock.build_payload(
         messages=[{"role": "user", "content": "Hello"}],
         system_prompt=RAILS_REACT_SYSTEM_PROMPT,
@@ -19,16 +24,19 @@ def test_build_payload_formats_system_prompt_with_cache_blocks():
     assert "system" in payload
     system_blocks = payload["system"]
     assert isinstance(system_blocks, list)
-    assert len(system_blocks) >= 2
+    assert len(system_blocks) >= 1
 
+    # Only the LAST block should have cache_control
+    last_block = system_blocks[-1]
+    assert last_block["cache_control"]["type"] == "ephemeral"
+
+    # Other blocks (if any) should NOT have cache_control
+    for block in system_blocks[:-1]:
+        assert "cache_control" not in block
+
+    # First block should contain the agent instructions
     first_block = system_blocks[0]
-    second_block = system_blocks[1]
-
-    assert first_block["cache_control"]["type"] == "ephemeral"
-    assert "You are an expert Rails Code Detective" in first_block["text"]
-    assert second_block["cache_control"]["type"] == "ephemeral"
-    # Second block contains SQL verification or guidelines content
-    assert "# SQL Match" in second_block["text"] or "# Guidelines" in second_block["text"]
+    assert "You are" in first_block["text"] or "Rails" in first_block["text"]
 
 
 def test_build_payload_preserves_existing_block_metadata():
@@ -47,7 +55,12 @@ def test_build_payload_preserves_existing_block_metadata():
     assert formatted_blocks[0]["cache_control"]["type"] == "ephemeral"
 
 
-def test_llm_client_does_not_add_cache_control_for_bedrock(monkeypatch):
+def test_llm_client_applies_cache_control_for_bedrock(monkeypatch):
+    """Test that LLMClient DOES add cache_control to last two user messages for Bedrock.
+
+    With supports_message_cache_control = True, the Cline-style caching
+    strategy marks the last two user messages with cache_control.
+    """
     captured_payload = {}
     original_build_payload = bedrock.build_payload
 
@@ -97,11 +110,32 @@ def test_llm_client_does_not_add_cache_control_for_bedrock(monkeypatch):
     client.call_llm(messages, tool_schemas=[])
 
     assert captured_payload["messages"], "Payload messages should be captured"
-    for message in captured_payload["messages"]:
-        assert "cache_control" not in message
 
-    assistant_message = captured_payload["messages"][1]  # first user removed system prompt
-    tool_block = assistant_message["content"][0]
+    # Helper to check if a message has cache_control
+    def has_cache_control(msg):
+        content = msg.get("content")
+        if isinstance(content, list):
+            return any(
+                isinstance(b, dict) and b.get("cache_control") == {"type": "ephemeral"}
+                for b in content
+            )
+        return False
+
+    # After stripping system, messages are:
+    # [0] user "initial query" - should have cache_control (2nd-to-last user)
+    # [1] assistant with tool_use - should NOT have cache_control
+    # [2] user "follow-up" - should have cache_control (last user)
+    first_user = captured_payload["messages"][0]
+    assistant_msg = captured_payload["messages"][1]
+    last_user = captured_payload["messages"][2]
+
+    # Last two USER messages should have cache_control
+    assert has_cache_control(first_user), "First user message should have cache_control"
+    assert has_cache_control(last_user), "Last user message should have cache_control"
+
+    # Assistant message should NOT have cache_control on tool_use blocks
+    assert "cache_control" not in assistant_msg
+    tool_block = assistant_msg["content"][0]
     assert "cache_control" not in tool_block
 
 

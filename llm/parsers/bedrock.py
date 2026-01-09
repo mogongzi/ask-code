@@ -94,13 +94,23 @@ class BedrockResponseParser:
         return tool_calls
 
     def extract_usage(self, data: dict) -> UsageInfo:
-        """Extract usage information from Bedrock response.
+        """Extract usage information including cache metrics from Bedrock response.
+
+        Bedrock response format:
+        {
+            "usage": {
+                "input_tokens": 893,          # Non-cached input
+                "output_tokens": 338,
+                "cache_creation_input_tokens": 0,    # Tokens written to cache
+                "cache_read_input_tokens": 1278,     # Tokens read from cache
+            }
+        }
 
         Args:
             data: Bedrock response data
 
         Returns:
-            UsageInfo with token counts
+            UsageInfo with token counts including cache metrics
         """
         try:
             usage = data.get("usage", {})
@@ -108,7 +118,16 @@ class BedrockResponseParser:
             # Bedrock uses mixed casing for usage keys depending on endpoint
             input_tokens = usage.get("input_tokens") or usage.get("inputTokens") or 0
             output_tokens = usage.get("output_tokens") or usage.get("outputTokens") or 0
-            total_tokens = usage.get("total_tokens") or usage.get("totalTokens") or (input_tokens + output_tokens)
+
+            # Cache metrics - flat fields in usage
+            cache_creation = (
+                usage.get("cache_creation_input_tokens") or
+                usage.get("cacheCreationInputTokens") or 0
+            )
+            cache_read = (
+                usage.get("cache_read_input_tokens") or
+                usage.get("cacheReadInputTokens") or 0
+            )
 
             # Fallback to invocation metrics when present (blocking responses)
             metrics = (
@@ -119,24 +138,52 @@ class BedrockResponseParser:
             if metrics:
                 input_tokens = metrics.get("inputTokenCount", input_tokens) or input_tokens
                 output_tokens = metrics.get("outputTokenCount", output_tokens) or output_tokens
-                total_tokens = metrics.get("totalTokenCount", total_tokens) or total_tokens
+                cache_creation = metrics.get("cacheCreationInputTokenCount", cache_creation) or cache_creation
+                cache_read = metrics.get("cacheReadInputTokenCount", cache_read) or cache_read
 
-            cost = usage.get("cost")
-            if cost is None:
-                cost = usage.get("total_cost") or usage.get("usd_cost")
+            # Total tokens = input + output + cached (for context tracking)
+            total_tokens = input_tokens + output_tokens + cache_read
 
-            if cost in (None, 0, 0.0) and (input_tokens or output_tokens):
-                # Estimate cost using Claude 3.5 Sonnet pricing as default
-                input_cost = (input_tokens / 1000) * 0.00204
-                output_cost = (output_tokens / 1000) * 0.00988
-                cost = input_cost + output_cost
+            # Calculate cost with cache-specific pricing
+            cost = self._calculate_cost_with_cache(
+                input_tokens, output_tokens, cache_creation, cache_read
+            )
 
             return UsageInfo(
                 input_tokens=int(input_tokens),
                 output_tokens=int(output_tokens),
                 total_tokens=int(total_tokens),
-                cost=float(cost or 0.0)
+                cost=float(cost),
+                cache_creation_input_tokens=int(cache_creation),
+                cache_read_input_tokens=int(cache_read)
             )
         except Exception as e:
             logger.error(f"Error extracting usage from Bedrock response: {e}")
             return UsageInfo()
+
+    def _calculate_cost_with_cache(
+        self,
+        input_tokens: int,
+        output_tokens: int,
+        cache_creation: int,
+        cache_read: int
+    ) -> float:
+        """Calculate cost with cache-specific pricing.
+
+        Claude 4 Sonnet on Bedrock pricing:
+        - Input: $0.003 per 1K tokens ($3/MTok)
+        - Output: $0.015 per 1K tokens ($15/MTok)
+        - Cache write: $0.00375 per 1K tokens (1.25x input)
+        - Cache read: $0.0003 per 1K tokens (0.1x input)
+        """
+        INPUT_RATE = 0.003
+        OUTPUT_RATE = 0.015
+        CACHE_WRITE_RATE = 0.00375   # 1.25x input rate
+        CACHE_READ_RATE = 0.0003     # 0.1x input rate
+
+        input_cost = (input_tokens / 1000) * INPUT_RATE
+        output_cost = (output_tokens / 1000) * OUTPUT_RATE
+        cache_write_cost = (cache_creation / 1000) * CACHE_WRITE_RATE
+        cache_read_cost = (cache_read / 1000) * CACHE_READ_RATE
+
+        return input_cost + output_cost + cache_write_cost + cache_read_cost

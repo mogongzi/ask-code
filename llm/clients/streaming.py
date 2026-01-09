@@ -167,7 +167,8 @@ class StreamingClient(BaseLLMClient):
                             current_tool = None
 
                 elif event.kind == "tokens":
-                    # Parse usage statistics
+                    # Parse usage statistics (extended format with cache metrics)
+                    # Format: "total|input|output|cost|cache_creation|cache_read"
                     if event.value and "|" in event.value:
                         parts = event.value.split("|")
                         if len(parts) >= 4:
@@ -182,6 +183,10 @@ class StreamingClient(BaseLLMClient):
                                 "output_tokens": _safe_int(output_str),
                                 "cost": _safe_float(cost_str),
                             }
+                            # Parse cache metrics if present (extended format)
+                            if len(parts) >= 6:
+                                usage_info["cache_creation_input_tokens"] = _safe_int(parts[4])
+                                usage_info["cache_read_input_tokens"] = _safe_int(parts[5])
                     else:
                         usage_info = {
                             "total_tokens": _safe_int(event.value),
@@ -200,6 +205,8 @@ class StreamingClient(BaseLLMClient):
                 "outputTokens": 0,
                 "totalTokens": 0,
                 "cost": 0.0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
             }
 
             if usage_info:
@@ -212,6 +219,8 @@ class StreamingClient(BaseLLMClient):
                         "input_tokens": usage_info.get("input_tokens", 0),
                         "output_tokens": usage_info.get("output_tokens", 0),
                         "total_tokens": usage_info.get("total_tokens", 0),
+                        "cache_creation_input_tokens": usage_info.get("cache_creation_input_tokens", 0),
+                        "cache_read_input_tokens": usage_info.get("cache_read_input_tokens", 0),
                     }
                 )
 
@@ -434,7 +443,8 @@ class StreamingClient(BaseLLMClient):
                                 tool_input_buffer = ""
 
                     elif event.kind == "tokens":
-                        # Parse usage statistics
+                        # Parse usage statistics (extended format with cache metrics)
+                        # Format: "total|input|output|cost|cache_creation|cache_read"
                         if event.value and "|" in event.value:
                             parts = event.value.split("|")
                             if len(parts) >= 4:
@@ -443,6 +453,10 @@ class StreamingClient(BaseLLMClient):
                                     "total_tokens": int(total_str) if total_str.isdigit() else 0,
                                     "cost": float(parts[3]) if parts[3] else 0.0
                                 }
+                                # Parse cache metrics if present (extended format)
+                                if len(parts) >= 6:
+                                    usage_data["cache_creation_input_tokens"] = int(parts[4]) if parts[4].isdigit() else 0
+                                    usage_data["cache_read_input_tokens"] = int(parts[5]) if parts[5].isdigit() else 0
                         else:
                             usage_data = {
                                 "total_tokens": int(event.value) if event.value and event.value.isdigit() else 0,
@@ -483,7 +497,9 @@ class StreamingClient(BaseLLMClient):
             cost=usage_data.get("cost", 0.0) if usage_data else 0.0,
             tool_calls=tool_call_objects,
             model_name=model_name,
-            aborted=self._abort
+            aborted=self._abort,
+            cache_creation_tokens=usage_data.get("cache_creation_input_tokens", 0) if usage_data else 0,
+            cache_read_tokens=usage_data.get("cache_read_input_tokens", 0) if usage_data else 0
         )
 
     def __repr__(self) -> str:

@@ -78,12 +78,14 @@ class LLMResponse:
 
     Attributes:
         text: The main text content of the response
-        tokens: Total tokens used (input + output)
-        cost: Estimated cost in USD
+        tokens: Total tokens used (input + output + cache_read for context tracking)
+        cost: Estimated cost in USD (with cache-aware pricing)
         tool_calls: List of tool calls made during response
         model_name: Name/ID of the model that generated the response
         aborted: Whether the request was aborted by user
         error: Error message if request failed
+        cache_creation_tokens: Tokens written to cache (1.25x input cost)
+        cache_read_tokens: Tokens read from cache (0.1x input cost)
     """
     text: str
     tokens: int = 0
@@ -92,6 +94,8 @@ class LLMResponse:
     model_name: Optional[str] = None
     aborted: bool = False
     error: Optional[str] = None
+    cache_creation_tokens: int = 0
+    cache_read_tokens: int = 0
 
     @staticmethod
     def error_response(error_message: str, partial_text: str = "") -> LLMResponse:
@@ -138,15 +142,19 @@ class UsageInfo:
     """Token usage and cost information.
 
     Attributes:
-        input_tokens: Number of tokens in the input
+        input_tokens: Number of non-cached input tokens (after cache breakpoint)
         output_tokens: Number of tokens in the output
-        total_tokens: Total tokens (input + output)
-        cost: Estimated cost in USD
+        total_tokens: Total tokens (input + output + cache_read for context tracking)
+        cost: Estimated cost in USD (with cache-aware pricing)
+        cache_creation_input_tokens: Tokens written to cache (1.25x input cost)
+        cache_read_input_tokens: Tokens read from cache (0.1x input cost)
     """
     input_tokens: int = 0
     output_tokens: int = 0
     total_tokens: int = 0
     cost: float = 0.0
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
     @classmethod
     def from_totals(cls, total: int, cost: float = 0.0) -> UsageInfo:
