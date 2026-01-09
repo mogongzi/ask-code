@@ -151,10 +151,11 @@ class LLMClient:
         if hasattr(self.session, "usage_tracker") and self.session.usage_tracker:
             if result.tokens > 0 or result.cost > 0:
                 self.session.usage_tracker.update(
-                    result.tokens,
-                    result.cost,
+                    input_tokens=getattr(result, 'input_tokens', 0),
+                    output_tokens=getattr(result, 'output_tokens', 0),
                     cache_creation=getattr(result, 'cache_creation_tokens', 0),
-                    cache_read=getattr(result, 'cache_read_tokens', 0)
+                    cache_read=getattr(result, 'cache_read_tokens', 0),
+                    cost=result.cost
                 )
 
         # Process tool calls and results

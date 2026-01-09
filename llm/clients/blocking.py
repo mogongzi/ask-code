@@ -90,6 +90,14 @@ class BlockingClient(BaseLLMClient):
             response.raise_for_status()
             data = response.json()
 
+            # Normalize wrapped responses that include a top-level "message" object.
+            if isinstance(data, dict) and "content" not in data:
+                message = data.get("message")
+                if isinstance(message, dict) and (
+                    "content" in message or "usage" in message
+                ):
+                    return message
+
             return data
 
         finally:

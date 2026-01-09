@@ -84,6 +84,8 @@ class LLMResponse:
         model_name: Name/ID of the model that generated the response
         aborted: Whether the request was aborted by user
         error: Error message if request failed
+        input_tokens: Non-cached input tokens
+        output_tokens: Output tokens generated
         cache_creation_tokens: Tokens written to cache (1.25x input cost)
         cache_read_tokens: Tokens read from cache (0.1x input cost)
     """
@@ -94,6 +96,8 @@ class LLMResponse:
     model_name: Optional[str] = None
     aborted: bool = False
     error: Optional[str] = None
+    input_tokens: int = 0
+    output_tokens: int = 0
     cache_creation_tokens: int = 0
     cache_read_tokens: int = 0
 

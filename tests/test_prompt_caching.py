@@ -126,15 +126,15 @@ class TestCacheAwareCostCalculation:
         assert with_write > without_write
 
     def test_cost_calculation_rates(self):
-        """Verify specific cost calculation rates."""
+        """Verify specific cost calculation rates for Claude 4.5 Sonnet."""
         parser = BedrockResponseParser()
 
-        # 1000 input tokens at $0.003/1K = $0.003
-        # 1000 output tokens at $0.015/1K = $0.015
-        # 1000 cache write tokens at $0.00375/1K = $0.00375
-        # 1000 cache read tokens at $0.0003/1K = $0.0003
+        # 1000 input tokens at $0.00223/1K = $0.00223
+        # 1000 output tokens at $0.01087/1K = $0.01087
+        # 1000 cache write tokens at $0.00254/1K = $0.00254
+        # 1000 cache read tokens at $0.00020/1K = $0.00020
         cost = parser._calculate_cost_with_cache(1000, 1000, 1000, 1000)
-        expected = 0.003 + 0.015 + 0.00375 + 0.0003
+        expected = 0.00223 + 0.01087 + 0.00254 + 0.00020
         assert abs(cost - expected) < 0.0001
 
 
@@ -303,43 +303,75 @@ class TestUsageTrackerCache:
         from chat.usage_tracker import UsageTracker
 
         tracker = UsageTracker()
-        tracker.update(1000, 0.01, cache_creation=500, cache_read=300)
+        tracker.update(input_tokens=500, output_tokens=500, cache_creation=500, cache_read=300, cost=0.01)
 
         assert tracker.cache_creation_tokens == 500
         assert tracker.cache_read_tokens == 300
+        assert tracker.input_tokens == 500
+        assert tracker.output_tokens == 500
 
     def test_display_includes_cache_indicator(self):
-        """Display string should include cache hit indicator."""
+        """Display string should include cache read/write info."""
         from chat.usage_tracker import UsageTracker
 
         tracker = UsageTracker()
-        tracker.update(1000, 0.01, cache_creation=100, cache_read=900)
+        tracker.update(input_tokens=500, output_tokens=500, cache_creation=100, cache_read=900, cost=0.01)
 
         display = tracker.get_display_string()
         assert display is not None
         assert "cache" in display
-        assert "90%" in display  # 900 / (900 + 100) = 90%
+        assert "Context:" in display
+        assert "Tokens[I/O]:" in display
 
-    def test_cache_summary(self):
-        """Cache summary should show detailed breakdown."""
+    def test_display_format(self):
+        """Display should follow new format: Context: X/Y Tokens[I/O]:[cache R/W][I/O][total] $X."""
         from chat.usage_tracker import UsageTracker
 
         tracker = UsageTracker()
-        tracker.update(1000, 0.01, cache_creation=1000, cache_read=5000)
+        tracker.update(input_tokens=1000, output_tokens=500, cache_creation=2000, cache_read=3000, cost=0.01)
 
-        summary = tracker.get_cache_summary()
-        assert summary is not None
-        assert "written" in summary
-        assert "read" in summary
-        assert "saved" in summary
+        display = tracker.get_display_string()
+        # Context should show the last request's tokens (1000+500+2000+3000 = 6500 = 6.5k)
+        assert "Context: 6.5k/200.0k" in display
+        # Cache part should show cumulative cache read/write
+        assert "[cache 3.0k/2.0k]" in display
+        # I/O part should show cumulative input/output
+        assert "[1.0k/500]" in display
+        # Total should show sum of all tokens
+        assert "[6.5k]" in display
 
     def test_reset_clears_cache_metrics(self):
-        """Reset should clear cache metrics."""
+        """Reset should clear all metrics including cache."""
         from chat.usage_tracker import UsageTracker
 
         tracker = UsageTracker()
-        tracker.update(1000, 0.01, cache_creation=500, cache_read=300)
+        tracker.update(input_tokens=500, output_tokens=500, cache_creation=500, cache_read=300, cost=0.01)
         tracker.reset()
 
         assert tracker.cache_creation_tokens == 0
         assert tracker.cache_read_tokens == 0
+        assert tracker.input_tokens == 0
+        assert tracker.output_tokens == 0
+        assert tracker.context_tokens == 0
+        assert tracker.total_cost == 0.0
+
+
+class TestTokenInfoRendering:
+    """Tests for token info display escaping."""
+
+    def test_cache_brackets_rendered_literally(self):
+        """Token info should display cache brackets without Rich stripping them."""
+        from io import StringIO
+        from rich.console import Console
+        from util.simple_pt_input import _display_usage_instructions
+
+        output = StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None, width=120)
+        token_info = "Tokens[I/O]:[cache 30.5k/11.0k][15/1.3k][42.8k] $0.048"
+
+        _display_usage_instructions(console, token_info, thinking_mode=False, tools_enabled=False)
+
+        rendered = output.getvalue().replace("\n", "")
+        # Rich markup treats bracketed text as style tags, so we escape token_info to keep
+        # the literal "[cache ...]" segment visible in the prompt line.
+        assert "[cache 30.5k/11.0k]" in rendered

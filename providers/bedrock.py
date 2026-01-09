@@ -235,42 +235,79 @@ def map_events(lines: Iterator[str]) -> Iterator[Event]:
             # Tool input streaming is complete, signal to execute
             yield ("tool_ready", None)
         elif e_type == "message_stop":
-            # Extract token usage and cost if available
-            usage = evt.get("amazon-bedrock-invocationMetrics") or evt.get("usage")
-            if usage:
-                input_tokens = usage.get("inputTokenCount", 0) or usage.get("input_tokens", 0)
-                output_tokens = usage.get("outputTokenCount", 0) or usage.get("output_tokens", 0)
+            # Extract usage (message_stop can nest usage under "message")
+            usage_dict = evt.get("usage")
+            if not isinstance(usage_dict, dict):
+                usage_dict = {}
+            message = evt.get("message")
+            message_usage = {}
+            if isinstance(message, dict) and isinstance(message.get("usage"), dict):
+                message_usage = message.get("usage", {}) or {}
 
-                # Extract cache metrics from usage
+            def _has_cache_fields(candidate: dict) -> bool:
+                return any(
+                    key in candidate
+                    for key in (
+                        "cache_creation",
+                        "cache_creation_input_tokens",
+                        "cacheCreationInputTokens",
+                        "cache_read_input_tokens",
+                        "cacheReadInputTokens",
+                    )
+                )
+
+            if message_usage and (not usage_dict or _has_cache_fields(message_usage)):
+                usage_dict = message_usage
+
+            # Token counts
+            input_tokens = (
+                usage_dict.get("input_tokens") or
+                usage_dict.get("inputTokens") or 0
+            )
+            output_tokens = (
+                usage_dict.get("output_tokens") or
+                usage_dict.get("outputTokens") or 0
+            )
+
+            # Cache metrics - from usage dict
+            cache_creation_obj = usage_dict.get("cache_creation", {})
+            ephemeral_5m = (cache_creation_obj.get("ephemeral_5m_input_tokens", 0) or 0)
+            ephemeral_1h = (cache_creation_obj.get("ephemeral_1h_input_tokens", 0) or 0)
+            nested_sum = ephemeral_5m + ephemeral_1h
+
+            # Use nested sum if non-zero, otherwise fall back to flat field
+            if nested_sum > 0:
+                cache_creation = nested_sum
+            else:
                 cache_creation = (
-                    usage.get("cache_creation_input_tokens") or
-                    usage.get("cacheCreationInputTokenCount", 0)
-                )
-                cache_read = (
-                    usage.get("cache_read_input_tokens") or
-                    usage.get("cacheReadInputTokenCount", 0)
+                    usage_dict.get("cache_creation_input_tokens") or
+                    usage_dict.get("cacheCreationInputTokens") or 0
                 )
 
-                # Total tokens for context tracking includes cache read tokens
-                total_tokens = input_tokens + output_tokens + cache_read
+            cache_read = (
+                usage_dict.get("cache_read_input_tokens") or
+                usage_dict.get("cacheReadInputTokens") or 0
+            )
 
-                if total_tokens > 0 or cache_read > 0 or cache_creation > 0:
-                    # Calculate cost with cache-specific pricing
-                    # Claude 4 Sonnet pricing: $3/MTok input, $15/MTok output
-                    # Cache write: 1.25x input, Cache read: 0.1x input
-                    INPUT_RATE = 0.003
-                    OUTPUT_RATE = 0.015
-                    CACHE_WRITE_RATE = 0.00375
-                    CACHE_READ_RATE = 0.0003
+            # Total tokens for context tracking includes cache read tokens
+            total_tokens = input_tokens + output_tokens + cache_read
 
-                    input_cost = (input_tokens / 1000) * INPUT_RATE
-                    output_cost = (output_tokens / 1000) * OUTPUT_RATE
-                    cache_write_cost = (cache_creation / 1000) * CACHE_WRITE_RATE
-                    cache_read_cost = (cache_read / 1000) * CACHE_READ_RATE
-                    total_cost = input_cost + output_cost + cache_write_cost + cache_read_cost
+            if input_tokens > 0 or output_tokens > 0 or cache_read > 0 or cache_creation > 0:
+                # Calculate cost with cache-specific pricing
+                # Claude 4.5 Sonnet pricing on Bedrock
+                INPUT_RATE = 0.00223      # $2.23 per 1M tokens
+                OUTPUT_RATE = 0.01087     # $10.87 per 1M tokens
+                CACHE_WRITE_RATE = 0.00254  # 25% more than input
+                CACHE_READ_RATE = 0.00020   # 90% less than input
 
-                    # Extended format: "total|input|output|cost|cache_creation|cache_read"
-                    token_info = f"{total_tokens}|{input_tokens}|{output_tokens}|{total_cost:.6f}|{cache_creation}|{cache_read}"
-                    yield ("tokens", token_info)
+                input_cost = (input_tokens / 1000) * INPUT_RATE
+                output_cost = (output_tokens / 1000) * OUTPUT_RATE
+                cache_write_cost = (cache_creation / 1000) * CACHE_WRITE_RATE
+                cache_read_cost = (cache_read / 1000) * CACHE_READ_RATE
+                total_cost = input_cost + output_cost + cache_write_cost + cache_read_cost
+
+                # Extended format: "total|input|output|cost|cache_creation|cache_read"
+                token_info = f"{total_tokens}|{input_tokens}|{output_tokens}|{total_cost:.6f}|{cache_creation}|{cache_read}"
+                yield ("tokens", token_info)
             yield ("done", None)
             break

@@ -121,7 +121,11 @@ class BaseLLMClient(ABC):
                 cost=usage.cost,
                 tool_calls=tool_calls,
                 model_name=model_name,
-                aborted=self._abort
+                aborted=self._abort,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                cache_creation_tokens=usage.cache_creation_input_tokens,
+                cache_read_tokens=usage.cache_read_input_tokens
             )
 
         except Exception as e:

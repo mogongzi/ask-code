@@ -27,6 +27,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.completion import merge_completers
 from prompt_toolkit.styles import Style
 from rich.console import Console
+from rich.markup import escape
 from util.at_completer import AtCommandCompleter
 
 # Constants for visual consistency
@@ -268,22 +269,24 @@ def _display_usage_instructions(console: Console, token_info: Optional[str] = No
     if not show_instructions:
         # Show only token info if available
         if token_info:
-            console.print(f"[dim]Tokens: {token_info}[/dim]")
+            console.print(f"[dim]{token_info}[/dim]")
         return
 
-    if token_info:
+    safe_token_info = escape(token_info) if token_info else None
+
+    if safe_token_info:
         # Calculate padding to right-align token info
         terminal_width = console.size.width
         base_length = len(instructions)  # Use actual instruction text length
-        token_length = len(f"Tokens: {token_info}")
+        token_length = len(token_info)
         padding_needed = terminal_width - base_length - token_length - 4  # 4 for spacing buffer
 
         if padding_needed > 0:
             padding = " " * padding_needed
-            full_line = f"{instructions}{padding}Tokens: {token_info}"
+            full_line = f"{instructions}{padding}{safe_token_info}"
         else:
             # Fallback if terminal too narrow
-            full_line = f"{instructions}  Tokens: {token_info}"
+            full_line = f"{instructions}  {safe_token_info}"
     else:
         full_line = instructions
 

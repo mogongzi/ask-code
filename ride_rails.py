@@ -11,6 +11,7 @@ import signal
 import os
 from typing import List, Optional
 from rich.console import Console
+from rich.markup import escape
 from rich.text import Text
 
 # Import core components
@@ -81,17 +82,18 @@ def get_agent_input(
 
         instructions = f"{base_instructions}    {thinking_part}    /reasoning    /clear    /status    Esc=cancel"
 
-        if token_info:
+        safe_token_info = escape(token_info) if token_info else None
+
+        if safe_token_info:
             terminal_width = console.size.width if hasattr(console, "size") else 120
-            tokens_label = f"Tokens: {token_info}"
             base_length = len(instructions)
-            padding_needed = terminal_width - base_length - len(tokens_label)
+            padding_needed = terminal_width - base_length - len(token_info)
 
             if padding_needed > 2:
                 padding = " " * (padding_needed - 1)
-                console.print(f"[dim]{instructions}{padding}{tokens_label}[/dim]")
+                console.print(f"[dim]{instructions}{padding}{safe_token_info}[/dim]")
             else:
-                console.print(f"[dim]{instructions}  {tokens_label}[/dim]")
+                console.print(f"[dim]{instructions}  {safe_token_info}[/dim]")
         else:
             console.print(f"[dim]{instructions}[/dim]")
 

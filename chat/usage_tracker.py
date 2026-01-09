@@ -4,47 +4,60 @@ from typing import Optional
 
 
 class UsageTracker:
-    """Tracks token usage and costs with cache metrics display."""
+    """Tracks token usage and costs with granular cache metrics display."""
 
     def __init__(self, max_tokens_limit: int = 200000):
-        self.total_tokens_used = 0
-        self.total_cost = 0.0
+        # Context window tracking
+        self.context_tokens = 0         # Estimated context for next request
         self.max_tokens_limit = max_tokens_limit
-        self.cache_creation_tokens = 0
-        self.cache_read_tokens = 0
+
+        # Granular token tracking (session cumulative)
+        self.input_tokens = 0           # Non-cached input tokens
+        self.output_tokens = 0          # Output tokens
+        self.cache_read_tokens = 0      # Tokens read from cache
+        self.cache_creation_tokens = 0  # Tokens written to cache
+
+        # Cost tracking
+        self.total_cost = 0.0
 
     def update(
         self,
-        tokens: int,
-        cost: float,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
         cache_creation: int = 0,
-        cache_read: int = 0
+        cache_read: int = 0,
+        cost: float = 0.0
     ) -> None:
         """Update token and cost counters including cache metrics."""
-        if tokens > 0:
-            self.total_tokens_used += tokens
-        if cost > 0:
-            self.total_cost += cost
-        if cache_creation > 0:
-            self.cache_creation_tokens += cache_creation
-        if cache_read > 0:
-            self.cache_read_tokens += cache_read
+        # Cumulative token tracking
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.cache_creation_tokens += cache_creation
+        self.cache_read_tokens += cache_read
+        self.total_cost += cost
+
+        # Context = estimate for next request (what was just processed)
+        self.context_tokens = input_tokens + cache_read + output_tokens + cache_creation
 
     def get_display_string(self) -> Optional[str]:
         """Format usage statistics for prompt display.
 
-        Shows session cumulative tokens vs provider limit with cache indicator.
+        Format: Context: Xk/200k Tokens[I/O]:[cache read/write][in/out][total] $X.XXX
         """
-        if self.total_tokens_used <= 0:
+        if self.context_tokens <= 0 and self.total_cost <= 0:
             return None
 
-        # Format token count with k notation for large numbers (no percentage)
-        if self.total_tokens_used >= 1000 or self.max_tokens_limit >= 1000:
-            token_part = f"{self.total_tokens_used/1000:.1f}k/{self.max_tokens_limit/1000:.0f}k"
-        else:
-            token_part = f"{self.total_tokens_used}/{self.max_tokens_limit}"
+        # Context part: Context: 100k/200k
+        context_part = f"Context: {self._format_k(self.context_tokens)}/{self._format_k(self.max_tokens_limit)}"
 
-        # Scale cost precision based on magnitude
+        # Tokens I/O part: Tokens[I/O]:[cache 2.3k/1.5k][1k/0.4k][5.2k]
+        cache_part = f"[cache {self._format_k(self.cache_read_tokens)}/{self._format_k(self.cache_creation_tokens)}]"
+        io_part = f"[{self._format_k(self.input_tokens)}/{self._format_k(self.output_tokens)}]"
+        total_tokens = self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_creation_tokens
+        total_part = f"[{self._format_k(total_tokens)}]"
+        tokens_part = f"Tokens[I/O]:{cache_part}{io_part}{total_part}"
+
+        # Cost part with adaptive precision
         if self.total_cost >= 0.01:
             cost_part = f"${self.total_cost:.3f}"
         elif self.total_cost >= 0.001:
@@ -52,37 +65,19 @@ class UsageTracker:
         else:
             cost_part = f"${self.total_cost:.6f}"
 
-        # Cache hit indicator
-        cache_part = ""
-        if self.cache_read_tokens > 0:
-            total_cached = self.cache_read_tokens + self.cache_creation_tokens
-            if total_cached > 0:
-                hit_ratio = self.cache_read_tokens / total_cached * 100
-                cache_part = f" [cache {hit_ratio:.0f}%]"
+        return f"{context_part} {tokens_part} {cost_part}"
 
-        return f"{token_part} {cost_part}{cache_part}"
-
-    def get_cache_summary(self) -> Optional[str]:
-        """Get detailed cache summary for /status command."""
-        if self.cache_read_tokens == 0 and self.cache_creation_tokens == 0:
-            return None
-
-        parts = []
-        if self.cache_creation_tokens > 0:
-            parts.append(f"written: {self.cache_creation_tokens/1000:.1f}k")
-        if self.cache_read_tokens > 0:
-            parts.append(f"read: {self.cache_read_tokens/1000:.1f}k")
-
-        # Estimated savings (cache read at 0.1x vs full input)
-        if self.cache_read_tokens > 0:
-            savings = (self.cache_read_tokens / 1000) * 0.003 * 0.9  # 90% savings
-            parts.append(f"saved: ${savings:.4f}")
-
-        return " | ".join(parts)
+    def _format_k(self, value: int) -> str:
+        """Format number with k notation."""
+        if value >= 1000:
+            return f"{value/1000:.1f}k"
+        return str(value)
 
     def reset(self) -> None:
         """Reset all token and cost counters to zero."""
-        self.total_tokens_used = 0
-        self.total_cost = 0.0
-        self.cache_creation_tokens = 0
+        self.context_tokens = 0
+        self.input_tokens = 0
+        self.output_tokens = 0
         self.cache_read_tokens = 0
+        self.cache_creation_tokens = 0
+        self.total_cost = 0.0

@@ -73,6 +73,87 @@ class StreamingClient(BaseLLMClient):
         self.timeout = timeout
         self._on_tool_start = on_tool_start
 
+    @staticmethod
+    def _parse_usage_payload(value: Optional[object]) -> Optional[dict]:
+        """Parse a usage payload from JSON or dict into normalized fields."""
+        def _safe_int(raw: Optional[object]) -> int:
+            try:
+                if raw is None:
+                    return 0
+                return int(float(raw))
+            except (ValueError, TypeError):
+                return 0
+
+        def _safe_float(raw: Optional[object]) -> float:
+            try:
+                if raw in (None, ""):
+                    return 0.0
+                return float(raw)
+            except (ValueError, TypeError):
+                return 0.0
+
+        usage = None
+        if isinstance(value, dict):
+            usage = value
+        elif isinstance(value, str):
+            text = value.strip()
+            if text.startswith("{") and text.endswith("}"):
+                try:
+                    usage = json.loads(text)
+                except json.JSONDecodeError:
+                    return None
+            else:
+                return None
+        else:
+            return None
+
+        if isinstance(usage, dict):
+            if isinstance(usage.get("usage"), dict):
+                usage = usage["usage"]
+            elif isinstance(usage.get("message"), dict) and isinstance(usage["message"].get("usage"), dict):
+                usage = usage["message"]["usage"]
+
+        if not isinstance(usage, dict):
+            return None
+
+        input_tokens = _safe_int(
+            usage.get("input_tokens") or usage.get("inputTokens") or usage.get("input")
+        )
+        output_tokens = _safe_int(
+            usage.get("output_tokens") or usage.get("outputTokens") or usage.get("output")
+        )
+        cache_creation = _safe_int(
+            usage.get("cache_creation_input_tokens") or usage.get("cacheCreationInputTokens")
+        )
+        cache_read = _safe_int(
+            usage.get("cache_read_input_tokens") or usage.get("cacheReadInputTokens")
+        )
+
+        if cache_creation == 0 and isinstance(usage.get("cache_creation"), dict):
+            cache_creation_obj = usage.get("cache_creation", {})
+            ephemeral_5m = _safe_int(cache_creation_obj.get("ephemeral_5m_input_tokens"))
+            ephemeral_1h = _safe_int(cache_creation_obj.get("ephemeral_1h_input_tokens"))
+            nested_sum = ephemeral_5m + ephemeral_1h
+            if nested_sum > 0:
+                cache_creation = nested_sum
+
+        total_tokens = _safe_int(
+            usage.get("total_tokens") or usage.get("totalTokens") or usage.get("total")
+        )
+        if total_tokens == 0:
+            total_tokens = input_tokens + output_tokens + cache_read
+
+        cost = _safe_float(usage.get("cost") or usage.get("total_cost"))
+
+        return {
+            "total_tokens": total_tokens,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost": cost,
+            "cache_creation_input_tokens": cache_creation,
+            "cache_read_input_tokens": cache_read,
+        }
+
     def _make_request(
         self,
         url: str,
@@ -167,6 +248,10 @@ class StreamingClient(BaseLLMClient):
                             current_tool = None
 
                 elif event.kind == "tokens":
+                    parsed_usage = self._parse_usage_payload(event.value)
+                    if parsed_usage:
+                        usage_info = parsed_usage
+                        continue
                     # Parse usage statistics (extended format with cache metrics)
                     # Format: "total|input|output|cost|cache_creation|cache_read"
                     if event.value and "|" in event.value:
@@ -443,14 +528,22 @@ class StreamingClient(BaseLLMClient):
                                 tool_input_buffer = ""
 
                     elif event.kind == "tokens":
+                        parsed_usage = self._parse_usage_payload(event.value)
+                        if parsed_usage:
+                            usage_data = parsed_usage
+                            continue
                         # Parse usage statistics (extended format with cache metrics)
                         # Format: "total|input|output|cost|cache_creation|cache_read"
                         if event.value and "|" in event.value:
                             parts = event.value.split("|")
                             if len(parts) >= 4:
                                 total_str = parts[0].lstrip("~")
+                                input_str = parts[1].lstrip("~")
+                                output_str = parts[2].lstrip("~")
                                 usage_data = {
                                     "total_tokens": int(total_str) if total_str.isdigit() else 0,
+                                    "input_tokens": int(input_str) if input_str.isdigit() else 0,
+                                    "output_tokens": int(output_str) if output_str.isdigit() else 0,
                                     "cost": float(parts[3]) if parts[3] else 0.0
                                 }
                                 # Parse cache metrics if present (extended format)
@@ -460,6 +553,8 @@ class StreamingClient(BaseLLMClient):
                         else:
                             usage_data = {
                                 "total_tokens": int(event.value) if event.value and event.value.isdigit() else 0,
+                                "input_tokens": 0,
+                                "output_tokens": 0,
                                 "cost": 0.0
                             }
 
@@ -498,6 +593,8 @@ class StreamingClient(BaseLLMClient):
             tool_calls=tool_call_objects,
             model_name=model_name,
             aborted=self._abort,
+            input_tokens=usage_data.get("input_tokens", 0) if usage_data else 0,
+            output_tokens=usage_data.get("output_tokens", 0) if usage_data else 0,
             cache_creation_tokens=usage_data.get("cache_creation_input_tokens", 0) if usage_data else 0,
             cache_read_tokens=usage_data.get("cache_read_input_tokens", 0) if usage_data else 0
         )
