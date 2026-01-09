@@ -1,38 +1,139 @@
-# Repository Guidelines
+## Important
 
-## Project Structure & Module Organization
-`ride_rails.py` drives the CLI and ReAct loop; supporting agent wiring lives in `agent/` and `agent_tool_executor.py`. Shared state management sits in `chat/`, provider adapters in `providers/`, prompts in `prompts/`, and rendering helpers in `render/`. Place reusable utilities under `util/`, while analysis tools reside in `tools/` and extend `tools.base_tool.BaseTool`. Keep documentation that is not this guide inside `journal/` using the `YYYY-MM-DD_TOPIC.md` pattern. Tests belong exclusively in `tests/` alongside fixtures and helpers.
+- **`util/` folder**: Contains utility functions and helper modules used internally by the project
+- **`tools/` folder**: Contains tool definitions and implementations that can be invoked by LLMs via function calling and agent flow
+- **`tests/` folder**: Contains all test files (unit tests, integration tests, test utilities)
+- Execute `source .venv/bin/activate` before running `python3`, `python` or `pytest` commands
 
-### SQL Log Pre‑Processing (Adaptive Extractor)
-- `tools/components/sql_log_extractor.py` provides an adaptive extractor that normalizes SQL from heterogeneous DB logs (MySQL general log, multi‑line statements, header‑only entries like `... Query\nSELECT ...`).
-- It detects transaction boundaries (`BEGIN`, `START TRANSACTION`, `COMMIT`, `ROLLBACK`), accumulates multi‑line statements, strips comments for typing, and preserves metadata.
-- Downstream tools consume the normalized SQL to improve robustness and accuracy.
+## Test File Policy
 
-## Build, Test, and Development Commands
-Activate the virtualenv with `source .venv/bin/activate` before running Python commands. Install dependencies via `pip install -r requirements.txt`. Launch the CLI locally with `python3 ride_rails.py --provider bedrock --url http://127.0.0.1:8000/invoke --project-root /path/to/rails-app`. Replay saved transcripts using `python3 -m streaming_client < transcript.jsonl`. Run the full test suite with `pytest -q`; target a module by running `pytest tools/test_controller_analyzer.py -q` or filter with `pytest -k agents`.
+**IMPORTANT**: All test files MUST be placed in the `tests/` directory.
 
-### Tooling Updates (SQL)
-- `tools/enhanced_sql_rails_search.py` now pre‑processes input with the adaptive extractor:
-  - If multiple statements or a transaction block are detected, it returns a hint to use `transaction_analyzer` with a detected query count.
-  - If exactly one statement is detected, it analyzes the normalized SQL.
-- `tools/transaction_analyzer.py` consumes the adaptive extractor output to build a transaction flow:
-  - Recognizes `START TRANSACTION` as `BEGIN`.
-  - Splits transaction blocks into individual statements for timeline/patterns.
-  - Extracts controller/action from MySQL comments like `/* controller:Foo, action:bar */`.
+**Naming Convention:**
+- All test files must start with `test_` prefix
+- Format: `test_<module_name>.py` or `test_<feature>.py`
+- Example: `test_spinner_animation.py`, `test_non_streaming.py`
 
-## Coding Style & Naming Conventions
-Use Python 3 syntax with 4-space indentation, snake_case functions, CapWords classes, and type hints when obvious. Keep code Black-compatible even if Black is not enforced. Tool classes must expose explicit `name` and `description` metadata. Prefer dependency injection for providers, executors, and renderers so the agent remains streaming-safe. Keep Markdown ASCII unless the file already uses other characters.
+**Examples:**
+```bash
+# ✅ Correct placement
+tests/test_spinner_animation.py
+tests/test_non_streaming.py
+tests/test_agent_config.py
+tests/test_base_tool.py
 
-## Testing Guidelines
-Write tests with `pytest` and keep filenames in the form `tests/test_*.py`. Cover success and failure paths for each tool, including error handling in executor bridges. Use `tests/conftest.py` for shared fixtures, and capture manual verification notes in `journal/` rather than the root. When adding new analyzers, test both the tool output and the agent dispatch behavior.
+# ❌ Wrong placement (do not create test files in root)
+test_my_feature.py
+test_new_functionality.py
 
-### SQL Tests Added
-- `tests/test_sql_log_extractor.py`: Validates multi‑line extraction and transaction boundary handling.
-- `tests/test_transaction_analyzer_log_parsing.py`: Ensures `SELECT`/`COMMIT` and base table detection (e.g., `customers`) from real‑world log shape.
-- `tests/test_enhanced_search_preproc.py`: Verifies `enhanced_sql_rails_search` redirects transaction‑like input to `transaction_analyzer`.
+# ❌ Wrong naming (must start with test_)
+tests/my_feature_test.py
+tests/feature_tests.py
+```
 
-## Commit & Pull Request Guidelines
-Commits follow imperative mood with scope prefixes, e.g., `feat(tools): add migration analyzer` or `fix(chat): guard empty history`. Pull requests should describe behavior changes, include validation steps or transcripts, and link issues when relevant. Mention configuration or environment updates explicitly. Provide before/after snippets for user-facing output changes and highlight follow-up work if needed.
+**Test Organization:**
+- Unit tests: `tests/test_<module_name>.py`
+- Integration tests: `tests/test_<feature_name>.py`
+- Test fixtures: `tests/conftest.py`
+- Test utilities: `tests/run_tests.py`
 
-## Security & Configuration Tips
-Store credentials outside the repository and avoid logging secrets. Validate proxy URLs before sharing transcripts. Document any tool that shells out or touches the filesystem, and call out elevated requirements before enabling it by default.
+## Development Commands
+
+**Prerequisites:**
+
+- Python 3.13+
+- Virtual environment: `python3 -m venv .venv && source .venv/bin/activate`
+
+**Running the Application:**
+
+- Main Rails analysis CLI: `python3 ride_rails.py --project /path/to/rails/project`
+- Default endpoint: `http://127.0.0.1:8000/invoke` (blocking mode)
+- Provider options: `--provider bedrock` or `--provider azure`
+- Client modes: `--streaming` for SSE streaming (default: blocking)
+
+**Installation:**
+
+- Install dependencies: `pip install -r requirements.txt`
+- Required packages: `rich>=13.0.0`, `requests>=2.28.0`, `prompt-toolkit>=3.0.0`, `sqlglot>=10.0.0`
+
+**Testing:**
+
+- All test files must be placed in the `tests/` directory
+- Test files should follow naming convention: `test_*.py`
+- Use pytest framework for all tests
+- Run tests: `pytest tests/` or `python tests/run_tests.py`
+- Test utilities: `tests/conftest.py` for fixtures and configuration
+
+## Architecture Overview
+
+This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent architecture:
+
+**Core Components:**
+
+- **`ride_rails.py`**: Main CLI entry point for Rails code analysis with ReAct agent
+- **`agent/react_rails_agent.py`**: ReAct pattern implementation for intelligent Rails codebase analysis
+- **`agent/state_machine.py`**: ReAct state tracking (THOUGHT/ACTION/OBSERVATION cycles)
+- **`agent/tool_registry.py`**: Tool registration and schema generation for LLM function calling
+- **`llm/clients/streaming.py`**: SSE client for handling LLM streaming responses with tool execution
+- **`llm/clients/blocking.py`**: Blocking/synchronous client for single request/response with spinner animation
+- **`agent_tool_executor.py`**: Bridges between LLM function calls and agent tools
+
+**Tool System:**
+
+- **`tools/base_tool.py`**: Abstract base class for all analysis tools
+- **`tools/ripgrep_tool.py`**: Fast text/pattern search using ripgrep
+- **`tools/file_reader_tool.py`**: Read file contents with line numbers
+- **`tools/directory_tool.py`**: List and explore directory structure
+- **`tools/ast_grep_tool.py`**: AST-based code pattern search
+
+**Support Modules:**
+
+- **`agent/`**: ReAct agent core (`react_rails_agent.py`, `state_machine.py`, `tool_registry.py`, `response_analyzer.py`, `llm_client.py`, `config.py`)
+- **`llm/`**: LLM infrastructure (`clients/` for streaming/blocking, `parsers/` for response parsing, `types.py`, `error_handling.py`)
+- **`chat/`**: Session orchestration (`session.py`, `conversation.py`), usage tracking, tool workflow management
+- **`render/`**: Live markdown rendering (`markdown_live.py`, `block_buffered.py`)
+- **`providers/`**: LLM provider adapters (`azure.py`, `bedrock.py`)
+- **`util/`**: Input helpers, path browser, command handlers, URL helpers
+- **`prompts/`**: System prompts for the ReAct agent
+
+**ReAct Agent Flow:**
+
+1. User submits query via CLI
+2. `ReactRailsAgent.process_message()` initializes the ReAct loop
+3. Loop execution (`_execute_react_loop`):
+   - Agent calls LLM with available tool schemas
+   - LLM returns reasoning text (THOUGHT) and/or tool calls (ACTION)
+   - Tools execute via `AgentToolExecutor` and return results (OBSERVATION)
+   - `ResponseAnalyzer` determines if answer is complete
+4. Loop continues until a stopping condition is met:
+   - LLM provides substantive answer (>200 chars without tool calls)
+   - Max steps reached (default: 100)
+   - Agent stuck (2+ consecutive steps without tool calls)
+   - Infinite loop detected (same exact action repeated 3+ times)
+5. Final response is returned and rendered with optional reasoning trail
+
+**Available Tools:**
+- `ripgrep` - Fast text/pattern search across codebase
+- `file_reader` - Read file contents with line numbers
+- `list_directory` - Explore directory structure
+- `ast_grep` - AST-based code pattern search
+
+## CLI Usage
+
+- `/think`: Toggle reasoning mode on/off
+- `/reasoning`: Display the reasoning trail from last query
+- `/status`: Show current session status and token usage
+- `/clear`: Clear conversation history
+- `/help`: Show available commands
+- Multi-line input: Use Ctrl+J for new lines, Enter to submit
+- Escape or Ctrl+C to cancel during streaming
+
+## Verbose Mode
+
+Use the `--verbose` flag to enable detailed tool execution logging and error traces (INFO and DEBUG levels):
+
+```bash
+python3 ride_rails.py --project /path/to/rails/project --verbose
+```
+
+By default, only WARNING and ERROR level logs are shown.

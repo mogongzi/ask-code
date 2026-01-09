@@ -81,15 +81,6 @@ Common patterns that generate SQL (scope chains may appear between Model and met
 | `LIMIT n` | `.limit(n)` | `Model.active.limit(500)` |
 | `OFFSET n` | `.offset(n)` | `Model.active.offset(1000)` |
 
-**Scope chains**: Methods like `.active`, `.enabled`, `.visible` can appear anywhere in the chain.
-They add WHERE conditions but don't change the ORDER BY/LIMIT/OFFSET requirements.
-
-Examples:
-- `company.members.active.order(id: :asc).limit(500)` → has ORDER BY ✓
-- `Model.scope1.scope2.where(...).limit(n)` → missing ORDER BY if SQL has it ✗
-
-Callbacks (`after_create`, `after_commit`) → INSERT/UPDATE side effects
-
 # SQL-to-Rails Pattern Reasoning
 
 When searching for code that generates SQL:

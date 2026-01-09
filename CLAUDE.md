@@ -6,49 +6,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **`util/` folder**: Contains utility functions and helper modules used internally by the project
 - **`tools/` folder**: Contains tool definitions and implementations that can be invoked by LLMs via function calling and agent flow
-- **`journal/` folder**: Contains development documentation, implementation notes, and technical journals
 - **`tests/` folder**: Contains all test files (unit tests, integration tests, test utilities)
 - Execute `source .venv/bin/activate` before running `python3`, `python` or `pytest` commands
-
-## Documentation Policy
-
-**IMPORTANT**: All markdown documentation created by coding agents (Claude, Codex, or others) MUST be placed in the `journal/` folder.
 
 **Keep in root directory only:**
 - `README.md` - Project overview and quick start
 - `CLAUDE.md` - This file (instructions for Claude Code)
 - `AGENTS.md` - Agent architecture overview
 
-**Place in journal/ folder:**
-- Implementation notes and detailed technical documentation
-- Bug fix summaries and troubleshooting guides
-- Feature development journals and progress logs
-- API documentation and architectural deep-dives
-- Testing documentation and debugging guides
-- Any other development-related markdown files
-
-**Naming Convention:**
-- Use timestamp prefix: `YYYY-MM-DD_TOPIC.md`
-- Today's date: Use the actual date from the system
-- Example: `2025-09-30_NEW_FEATURE.md`
-
-**Examples:**
-```bash
-# ✅ Correct placement and naming
-journal/2025-09-30_FIXES_SUMMARY.md
-journal/2025-09-30_NON_STREAMING_API.md
-journal/2025-09-30_SPINNER_ANIMATION.md
-journal/2025-09-30_AGENT_FLOW_DETAILED.md
-
-# ❌ Wrong placement (do not create these in root)
-FEATURE_NOTES.md
-BUG_FIXES.md
-IMPLEMENTATION_DETAILS.md
-
-# ❌ Wrong naming (missing timestamp)
-journal/FEATURE_NOTES.md
-journal/BUG_FIXES.md
-```
 
 ## Test File Policy
 
@@ -81,7 +46,6 @@ tests/feature_tests.py
 - Integration tests: `tests/test_<feature_name>.py`
 - Test fixtures: `tests/conftest.py`
 - Test utilities: `tests/run_tests.py`
-```
 
 ## Development Commands
 
@@ -117,20 +81,25 @@ This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent a
 **Core Components:**
 
 - **`ride_rails.py`**: Main CLI entry point for Rails code analysis with ReAct agent
-- **`react_rails_agent.py`**: ReAct pattern implementation for intelligent Rails codebase analysis
-- **`streaming_client.py`**: SSE client for handling LLM streaming responses with tool execution
-- **`blocking_client.py`**: Blocking/synchronous client for single request/response with spinner animation
+- **`agent/react_rails_agent.py`**: ReAct pattern implementation for intelligent Rails codebase analysis
+- **`agent/state_machine.py`**: ReAct state tracking (THOUGHT/ACTION/OBSERVATION cycles)
+- **`agent/tool_registry.py`**: Tool registration and schema generation for LLM function calling
+- **`llm/clients/streaming.py`**: SSE client for handling LLM streaming responses with tool execution
+- **`llm/clients/blocking.py`**: Blocking/synchronous client for single request/response with spinner animation
 - **`agent_tool_executor.py`**: Bridges between LLM function calls and agent tools
 
 **Tool System:**
 
 - **`tools/base_tool.py`**: Abstract base class for all analysis tools
-- **`tools/transaction_analyzer.py`**: Analyzes complete SQL transaction logs to identify Rails patterns and callback chains
-- **Rail-specific tools**: `model_analyzer.py`, `controller_analyzer.py`, `route_analyzer.py`, `migration_analyzer.py`
-- **Search tools**: `ripgrep_tool.py`, `ast_grep_tool.py`, `enhanced_sql_rails_search.py`
+- **`tools/ripgrep_tool.py`**: Fast text/pattern search using ripgrep
+- **`tools/file_reader_tool.py`**: Read file contents with line numbers
+- **`tools/directory_tool.py`**: List and explore directory structure
+- **`tools/ast_grep_tool.py`**: AST-based code pattern search
 
 **Support Modules:**
 
+- **`agent/`**: ReAct agent core (`react_rails_agent.py`, `state_machine.py`, `tool_registry.py`, `response_analyzer.py`, `llm_client.py`, `config.py`)
+- **`llm/`**: LLM infrastructure (`clients/` for streaming/blocking, `parsers/` for response parsing, `types.py`, `error_handling.py`)
 - **`chat/`**: Session orchestration (`session.py`, `conversation.py`), usage tracking, tool workflow management
 - **`render/`**: Live markdown rendering (`markdown_live.py`, `block_buffered.py`)
 - **`providers/`**: LLM provider adapters (`azure.py`, `bedrock.py`)
@@ -139,27 +108,31 @@ This is a Rails code analysis tool using a ReAct (Reasoning + Acting) AI agent a
 
 **ReAct Agent Flow:**
 
-1. User submits Rails-related query (including SQL transaction logs)
-2. Agent detects query type and selects appropriate tools:
-   - Single SQL queries → `enhanced_sql_rails_search`
-   - Transaction logs → `transaction_analyzer` (automatically detects multi-query logs)
-   - Model/controller analysis → specific analyzer tools
-3. Tools execute analysis on the Rails codebase
-4. Agent observes tool results and decides next action
-5. Process repeats until final answer is formulated
+1. User submits query via CLI
+2. `ReactRailsAgent.process_message()` initializes the ReAct loop
+3. Loop execution (`_execute_react_loop`):
+   - Agent calls LLM with available tool schemas
+   - LLM returns reasoning text (THOUGHT) and/or tool calls (ACTION)
+   - Tools execute via `AgentToolExecutor` and return results (OBSERVATION)
+   - `ResponseAnalyzer` determines if answer is complete
+4. Loop continues until a stopping condition is met:
+   - LLM provides substantive answer (>200 chars without tool calls)
+   - Max steps reached (default: 100)
+   - Agent stuck (2+ consecutive steps without tool calls)
+   - Infinite loop detected (same exact action repeated 3+ times)
+5. Final response is returned and rendered with optional reasoning trail
 
-**Transaction Analysis Feature:**
-
-The agent now automatically detects SQL transaction logs (multiple queries with timestamps) and uses the specialized `transaction_analyzer` tool to:
-
-- Parse complete transaction flows from BEGIN to COMMIT
-- Identify Rails callback chains and triggers
-- Map database operations to likely Rails patterns (audit logging, feed generation, etc.)
-- Provide source code search across the entire transaction context
+**Available Tools:**
+- `ripgrep` - Fast text/pattern search across codebase
+- `file_reader` - Read file contents with line numbers
+- `list_directory` - Explore directory structure
+- `ast_grep` - AST-based code pattern search
 
 ## CLI Usage
 
 - `/think`: Toggle reasoning mode on/off
+- `/reasoning`: Display the reasoning trail from last query
+- `/status`: Show current session status and token usage
 - `/clear`: Clear conversation history
 - `/help`: Show available commands
 - Multi-line input: Use Ctrl+J for new lines, Enter to submit
