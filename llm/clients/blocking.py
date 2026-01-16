@@ -10,8 +10,6 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 import requests
-from requests.exceptions import RequestException, ReadTimeout, ConnectTimeout
-
 from llm.types import LLMResponse, Provider
 from llm.clients.base import BaseLLMClient
 from llm.ui.spinner import SpinnerManager
