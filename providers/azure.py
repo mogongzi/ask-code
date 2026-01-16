@@ -315,14 +315,28 @@ def map_events(lines: Iterator[str]) -> Iterator[Event]:
             total_tokens = usage.get("total_tokens", 0)
             input_tokens = usage.get("prompt_tokens", 0)
             output_tokens = usage.get("completion_tokens", 0)
-            if total_tokens > 0:
-                # Calculate cost (GPT-5 pricing: $0.91/1K input, $6.77/1K output)
-                input_cost = (input_tokens / 1000) * 0.00091
-                output_cost = (output_tokens / 1000) * 0.00677
-                total_cost = input_cost + output_cost
 
-                # Format: "tokens|input_tokens|output_tokens|cost"
-                token_info = f"{total_tokens}|{input_tokens}|{output_tokens}|{total_cost:.6f}"
+            # Extract cache metrics from prompt_tokens_details
+            # Azure/OpenAI returns: {"prompt_tokens_details": {"cached_tokens": N}}
+            prompt_details = usage.get("prompt_tokens_details", {})
+            cache_read_tokens = prompt_details.get("cached_tokens", 0) if prompt_details else 0
+            cache_creation_tokens = 0  # Azure doesn't expose cache creation
+
+            if total_tokens > 0:
+                # GPT-5 on Azure OpenAI pricing (2025-08-07)
+                # Cache read is 90% less than input (same as Claude)
+                INPUT_RATE = 0.00091    # $/1K tokens
+                OUTPUT_RATE = 0.00677   # $/1K tokens
+                CACHE_READ_RATE = 0.00009  # $/1K tokens (90% discount)
+
+                non_cached_input = input_tokens - cache_read_tokens
+                input_cost = (non_cached_input / 1000) * INPUT_RATE
+                cached_cost = (cache_read_tokens / 1000) * CACHE_READ_RATE
+                output_cost = (output_tokens / 1000) * OUTPUT_RATE
+                total_cost = input_cost + cached_cost + output_cost
+
+                # Format: "total|input|output|cost|cache_creation|cache_read"
+                token_info = f"{total_tokens}|{input_tokens}|{output_tokens}|{total_cost:.6f}|{cache_creation_tokens}|{cache_read_tokens}"
                 yield ("tokens", token_info)
 
                 # If we had a previous finish_reason, now emit done after getting usage

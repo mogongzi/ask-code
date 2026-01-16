@@ -48,7 +48,7 @@ tests/feature_tests.py
 
 - Main Rails analysis CLI: `python3 ride_rails.py --project /path/to/rails/project`
 - Default endpoint: `http://127.0.0.1:8000/invoke` (blocking mode)
-- Provider options: `--provider bedrock` or `--provider azure`
+- Provider options: `--provider azure` (default) or `--provider bedrock`
 - Client modes: `--streaming` for SSE streaming (default: blocking)
 
 **Installation:**

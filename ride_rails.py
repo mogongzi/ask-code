@@ -497,9 +497,9 @@ Examples:
     )
     parser.add_argument(
         "--provider",
-        default="bedrock",
+        default="azure",
         choices=["bedrock", "azure"],
-        help="Provider adapter to use (default: bedrock)",
+        help="Provider adapter to use (default: azure)",
     )
     parser.add_argument(
         "--verbose",

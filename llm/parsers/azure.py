@@ -11,7 +11,6 @@ import logging
 from typing import List, Optional
 
 from llm.types import UsageInfo
-from llm.exceptions import LLMParsingError
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +126,7 @@ class AzureResponseParser:
             data: Azure/OpenAI response data
 
         Returns:
-            UsageInfo with token counts
+            UsageInfo with token counts including cache metrics
         """
         try:
             usage = data.get("usage", {})
@@ -135,21 +134,34 @@ class AzureResponseParser:
             output_tokens = usage.get("completion_tokens", 0)
             total_tokens = usage.get("total_tokens", input_tokens + output_tokens)
 
+            # Extract cache metrics from prompt_tokens_details
+            # Azure/OpenAI returns: {"prompt_tokens_details": {"cached_tokens": N}}
+            prompt_details = usage.get("prompt_tokens_details", {})
+            cache_read_tokens = prompt_details.get("cached_tokens", 0) if prompt_details else 0
+
             cost = usage.get("cost")
             if cost is None:
                 cost = usage.get("total_cost") or usage.get("usd_cost")
 
             if cost in (None, 0, 0.0) and (input_tokens or output_tokens):
-                # Basic pricing defaults for GPT-style models (approximate)
-                input_cost = (input_tokens / 1000) * 0.003
-                output_cost = (output_tokens / 1000) * 0.006
-                cost = input_cost + output_cost
+                # GPT-5 on Azure OpenAI pricing (2025-08-07)
+                # Cache read is 90% less than input (same as Claude)
+                INPUT_RATE = 0.00091    # $/1K tokens
+                OUTPUT_RATE = 0.00677   # $/1K tokens
+                CACHE_READ_RATE = 0.00009  # $/1K tokens (90% discount)
+
+                non_cached_input = input_tokens - cache_read_tokens
+                input_cost = (non_cached_input / 1000) * INPUT_RATE
+                cached_cost = (cache_read_tokens / 1000) * CACHE_READ_RATE
+                output_cost = (output_tokens / 1000) * OUTPUT_RATE
+                cost = input_cost + cached_cost + output_cost
 
             return UsageInfo(
                 input_tokens=int(input_tokens),
                 output_tokens=int(output_tokens),
                 total_tokens=int(total_tokens),
-                cost=float(cost or 0.0)
+                cost=float(cost or 0.0),
+                cache_read_input_tokens=int(cache_read_tokens)
             )
         except Exception as e:
             logger.error(f"Error extracting usage from Azure response: {e}")

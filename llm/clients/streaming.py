@@ -129,6 +129,11 @@ class StreamingClient(BaseLLMClient):
             usage.get("cache_read_input_tokens") or usage.get("cacheReadInputTokens")
         )
 
+        # Handle Azure/OpenAI format: prompt_tokens_details.cached_tokens
+        if cache_read == 0 and isinstance(usage.get("prompt_tokens_details"), dict):
+            prompt_details = usage.get("prompt_tokens_details", {})
+            cache_read = _safe_int(prompt_details.get("cached_tokens"))
+
         if cache_creation == 0 and isinstance(usage.get("cache_creation"), dict):
             cache_creation_obj = usage.get("cache_creation", {})
             ephemeral_5m = _safe_int(cache_creation_obj.get("ephemeral_5m_input_tokens"))

@@ -10,7 +10,6 @@ import logging
 from typing import List, Optional
 
 from llm.types import UsageInfo
-from llm.exceptions import LLMParsingError
 
 logger = logging.getLogger(__name__)
 

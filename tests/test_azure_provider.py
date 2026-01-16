@@ -235,6 +235,55 @@ class TestAzureResponseParser:
         assert usage.output_tokens == 281
         assert usage.total_tokens == 605
 
+    def test_extract_usage_with_cached_tokens(self):
+        """Test parsing usage info with prompt_tokens_details.cached_tokens (Azure/OpenAI format)."""
+        response = {
+            "choices": [{"message": {"content": "Hello"}}],
+            "usage": {
+                "completion_tokens": 244,
+                "prompt_tokens": 3230,
+                "total_tokens": 3474,
+                "completion_tokens_details": {
+                    "accepted_prediction_tokens": 0,
+                    "audio_tokens": 0,
+                    "reasoning_tokens": 192,
+                    "rejected_prediction_tokens": 0
+                },
+                "prompt_tokens_details": {
+                    "audio_tokens": 0,
+                    "cached_tokens": 1408
+                }
+            }
+        }
+
+        parser = AzureResponseParser()
+        usage = parser.extract_usage(response)
+
+        assert usage.input_tokens == 3230
+        assert usage.output_tokens == 244
+        assert usage.total_tokens == 3474
+        assert usage.cache_read_input_tokens == 1408
+        # Azure doesn't expose cache creation tokens
+        assert usage.cache_creation_input_tokens == 0
+
+    def test_extract_usage_without_prompt_details(self):
+        """Test that missing prompt_tokens_details doesn't break parsing."""
+        response = {
+            "choices": [{"message": {"content": "Hello"}}],
+            "usage": {
+                "completion_tokens": 100,
+                "prompt_tokens": 200,
+                "total_tokens": 300
+            }
+        }
+
+        parser = AzureResponseParser()
+        usage = parser.extract_usage(response)
+
+        assert usage.input_tokens == 200
+        assert usage.output_tokens == 100
+        assert usage.cache_read_input_tokens == 0
+
     def test_extract_text_content(self):
         """Test extracting text content from response."""
         response = {
